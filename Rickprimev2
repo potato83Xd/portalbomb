@@ -1,0 +1,1013 @@
+--[[
+    RICK PRIME WEAPON SYSTEM
+    Plasma Pistol + Portal Bomb
+    Botón Portal Bomb movible y funcional
+]]
+
+print("=== RICK PRIME WEAPON SYSTEM ===")
+
+--------------------------------------------------
+-- SERVICIOS
+--------------------------------------------------
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Debris = game:GetService("Debris")
+local InsertService = game:GetService("InsertService")
+
+local Player = Players.LocalPlayer
+local Character = Player.Character or Player.CharacterAdded:Wait()
+
+--------------------------------------------------
+-- CONFIGURACIÓN
+--------------------------------------------------
+
+local PLASMA_ASSET = 75336556740663
+local PLASMA_COOLDOWN = 0.2
+local PLASMA_SPEED = 150
+local PLASMA_DISTANCE = 500
+
+local PlasmaRed = Color3.fromRGB(255, 40, 40)
+local PlasmaNeon = Color3.fromRGB(255, 100, 80)
+
+local PORTAL_TIME = 2
+local BOMB_SPEED = 130
+local MAX_RANGE = 250
+local PORTAL_COOLDOWN = 1
+
+local PORTAL_TEXTURE = "rbxassetid://103698070158261"
+local PORTAL_OPEN_SOUND = "rbxassetid://756847338"
+local EXPLOSION_SOUND = "rbxassetid://138186576"
+
+--------------------------------------------------
+-- ESTADO
+--------------------------------------------------
+
+local PlasmaGun = nil
+local ToolEquipped = false
+local CanShoot = true
+
+local aiming = false
+local marker = nil
+local ready = true
+local targetPosition = nil
+
+local touchAiming =
+	UserInputService.TouchEnabled
+	and not UserInputService.MouseEnabled
+
+--------------------------------------------------
+-- RAYCAST
+--------------------------------------------------
+
+local RayParams = RaycastParams.new()
+RayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+local function UpdateRaycastFilter()
+	RayParams.FilterDescendantsInstances = {
+		Character,
+		marker
+	}
+end
+
+local function GetRaycast(screenPosition)
+	local camera = workspace.CurrentCamera
+	if not camera then
+		return nil
+	end
+
+	UpdateRaycastFilter()
+
+	local ray = camera:ScreenPointToRay(
+		screenPosition.X,
+		screenPosition.Y
+	)
+
+	local result = workspace:Raycast(
+		ray.Origin,
+		ray.Direction * MAX_RANGE,
+		RayParams
+	)
+
+	if result then
+		return result.Position
+	end
+
+	return ray.Origin + ray.Direction * 100
+end
+
+--------------------------------------------------
+-- MARCADOR
+--------------------------------------------------
+
+local function CreateMarker(position)
+	local part = Instance.new("Part")
+	part.Name = "TargetMarker"
+	part.Size = Vector3.new(4, 0.2, 4)
+	part.Material = Enum.Material.Neon
+	part.Color = Color3.fromRGB(0, 170, 255)
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanTouch = false
+	part.CanQuery = false
+	part.Position = position
+	part.Parent = workspace
+
+	return part
+end
+
+local function DestroyMarker()
+	if marker then
+		marker:Destroy()
+		marker = nil
+	end
+end
+
+--------------------------------------------------
+-- PLASMA
+--------------------------------------------------
+
+local function CreatePlasmaBullet(startPos, direction)
+
+	local bullet = Instance.new("Part")
+	bullet.Name = "PlasmaBullet"
+	bullet.Shape = Enum.PartType.Ball
+	bullet.Size = Vector3.new(0.8, 0.8, 0.8)
+	bullet.Color = PlasmaRed
+	bullet.Material = Enum.Material.Neon
+	bullet.CanCollide = false
+	bullet.Anchored = true
+	bullet.CFrame = CFrame.new(startPos)
+	bullet.Parent = workspace
+
+	local light = Instance.new("PointLight")
+	light.Color = PlasmaRed
+	light.Brightness = 5
+	light.Range = 10
+	light.Parent = bullet
+
+	local att0 = Instance.new("Attachment")
+	att0.Parent = bullet
+
+	local att1 = Instance.new("Attachment")
+	att1.Position = Vector3.new(0, 0, 0.4)
+	att1.Parent = bullet
+
+	local trail = Instance.new("Trail")
+	trail.Attachment0 = att0
+	trail.Attachment1 = att1
+	trail.Color = ColorSequence.new(
+		PlasmaRed,
+		PlasmaNeon
+	)
+	trail.Transparency = NumberSequence.new(0, 1)
+	trail.WidthScale = NumberSequence.new(0.5, 0)
+	trail.Lifetime = 0.2
+	trail.FaceCamera = true
+	trail.Parent = bullet
+
+	local sound = Instance.new("Sound")
+	sound.SoundId = "rbxassetid://9113083516"
+	sound.Volume = 0.5
+	sound.Parent = bullet
+	sound:Play()
+
+	local travelled = 0
+	local connection
+
+	connection = RunService.Heartbeat:Connect(function(dt)
+
+		if not bullet.Parent then
+			connection:Disconnect()
+			return
+		end
+
+		local move = direction * PLASMA_SPEED * dt
+
+		local result = workspace:Raycast(
+			bullet.Position,
+			move,
+			RayParams
+		)
+
+		if result or travelled >= PLASMA_DISTANCE then
+
+			connection:Disconnect()
+
+			if result then
+
+				for i = 1, 6 do
+
+					local spark = Instance.new("Part")
+					spark.Shape = Enum.PartType.Ball
+					spark.Size = Vector3.new(0.2, 0.2, 0.2)
+					spark.Color = PlasmaRed
+					spark.Material = Enum.Material.Neon
+					spark.Anchored = false
+					spark.CanCollide = false
+					spark.Position = result.Position
+					spark.Parent = workspace
+
+					local velocity = Instance.new("BodyVelocity")
+					velocity.MaxForce =
+						Vector3.new(1e5, 1e5, 1e5)
+
+					velocity.Velocity = Vector3.new(
+						math.random(-40, 40),
+						math.random(-40, 40),
+						math.random(-40, 40)
+					)
+
+					velocity.Parent = spark
+
+					Debris:AddItem(spark, 0.4)
+					Debris:AddItem(velocity, 0.1)
+				end
+			end
+
+			bullet:Destroy()
+			return
+		end
+
+		bullet.CFrame += move
+		travelled += move.Magnitude
+	end)
+
+	Debris:AddItem(bullet, 3)
+end
+
+--------------------------------------------------
+-- DISPARAR PLASMA
+--------------------------------------------------
+
+local function ShootPlasma()
+
+	if not ToolEquipped
+		or not CanShoot
+		or not PlasmaGun then
+		return
+	end
+
+	local handle = PlasmaGun:FindFirstChild("Handle")
+
+	if not handle then
+		return
+	end
+
+	CanShoot = false
+
+	local mouse = Player:GetMouse()
+	local camera = workspace.CurrentCamera
+
+	local startPos =
+		handle.Position
+		+ camera.CFrame.LookVector * 2
+
+	local direction =
+		(mouse.Hit.Position - startPos).Unit
+
+	CreatePlasmaBullet(
+		startPos,
+		direction
+	)
+
+	task.delay(PLASMA_COOLDOWN, function()
+		CanShoot = true
+	end)
+end
+
+--------------------------------------------------
+-- CARGAR PISTOLA
+--------------------------------------------------
+
+local function LoadGunAsset()
+
+	local ok, model = pcall(function()
+
+		local asset =
+			InsertService:LoadAsset(PLASMA_ASSET)
+
+		return asset and asset:GetChildren()[1]
+	end)
+
+	if ok and model then
+		return model
+	end
+
+	ok, model = pcall(function()
+
+		local objects =
+			game:GetObjects(
+				"rbxassetid://" .. PLASMA_ASSET
+			)
+
+		return objects and objects[1]
+	end)
+
+	if ok and model then
+		return model
+	end
+
+	return nil
+end
+
+--------------------------------------------------
+-- CREAR PISTOLA
+--------------------------------------------------
+
+local function CreatePlasmaPistol()
+
+	for _, item in ipairs(Player.Backpack:GetChildren()) do
+		if item.Name == "Plasma Pistol" then
+			item:Destroy()
+		end
+	end
+
+	local oldGun =
+		Character:FindFirstChild("Plasma Pistol")
+
+	if oldGun then
+		oldGun:Destroy()
+	end
+
+	local gunAsset = LoadGunAsset()
+
+	if not gunAsset then
+		warn("No se pudo cargar el asset de la pistola.")
+		return
+	end
+
+	local tool = Instance.new("Tool")
+	tool.Name = "Plasma Pistol"
+	tool.RequiresHandle = true
+	tool.CanBeDropped = false
+	tool.Grip = CFrame.new(0, 0.1, -0.2)
+
+	local handle = Instance.new("Part")
+	handle.Name = "Handle"
+	handle.Size = Vector3.new(0.2, 0.2, 0.2)
+	handle.Transparency = 1
+	handle.CanCollide = false
+	handle.Massless = true
+	handle.Parent = tool
+
+	local rotation =
+		CFrame.Angles(
+			math.rad(-90),
+			math.rad(180),
+			0
+		)
+
+	if gunAsset:IsA("Model") then
+
+		local primary =
+			gunAsset.PrimaryPart
+			or gunAsset:FindFirstChildWhichIsA(
+				"BasePart",
+				true
+			)
+
+		if primary then
+			gunAsset.PrimaryPart = primary
+			gunAsset:PivotTo(
+				handle.CFrame * rotation
+			)
+		end
+
+		for _, part in ipairs(
+			gunAsset:GetDescendants()
+		) do
+
+			if part:IsA("BasePart") then
+
+				part.CanCollide = false
+				part.Anchored = false
+				part.Massless = true
+
+				local weld =
+					Instance.new("WeldConstraint")
+
+				weld.Part0 = handle
+				weld.Part1 = part
+				weld.Parent = part
+			end
+		end
+
+		gunAsset.Parent = tool
+
+	elseif gunAsset:IsA("BasePart") then
+
+		gunAsset.CanCollide = false
+		gunAsset.Anchored = false
+		gunAsset.Massless = true
+		gunAsset.CFrame =
+			handle.CFrame * rotation
+
+		local weld =
+			Instance.new("WeldConstraint")
+
+		weld.Part0 = handle
+		weld.Part1 = gunAsset
+		weld.Parent = gunAsset
+
+		gunAsset.Parent = tool
+	end
+
+	tool.Equipped:Connect(function()
+		ToolEquipped = true
+		PlasmaGun = tool
+	end)
+
+	tool.Unequipped:Connect(function()
+		ToolEquipped = false
+		PlasmaGun = nil
+	end)
+
+	tool.Activated:Connect(ShootPlasma)
+
+	tool.Parent = Player.Backpack
+
+	print("Plasma Pistol lista")
+end
+
+--------------------------------------------------
+-- PORTAL
+--------------------------------------------------
+
+local function CreatePortal(position)
+
+	local portal = Instance.new("Part")
+
+	portal.Name = "Portal3D"
+	portal.Shape = Enum.PartType.Cylinder
+	portal.Size = Vector3.new(0.35, 6, 6)
+	portal.Material = Enum.Material.Neon
+	portal.Color = Color3.fromRGB(0, 255, 100)
+	portal.Transparency = 0.35
+	portal.Anchored = true
+	portal.CanCollide = false
+	portal.CanTouch = false
+	portal.CanQuery = false
+	portal.CastShadow = false
+	portal.CFrame =
+		CFrame.new(position)
+		* CFrame.Angles(0, 0, math.rad(90))
+
+	portal.Parent = workspace
+
+	for _, face in ipairs({
+		Enum.NormalId.Left,
+		Enum.NormalId.Right
+	}) do
+
+		local decal = Instance.new("Decal")
+
+		decal.Name = "PortalTexture"
+		decal.Texture = PORTAL_TEXTURE
+		decal.Face = face
+		decal.Parent = portal
+	end
+
+	local light = Instance.new("PointLight")
+	light.Color = Color3.fromRGB(60, 255, 90)
+	light.Brightness = 4
+	light.Range = 22
+	light.Parent = portal
+
+	local sound = Instance.new("Sound")
+	sound.SoundId = PORTAL_OPEN_SOUND
+	sound.Volume = 1.8
+	sound.RollOffMaxDistance = 80
+	sound.Parent = portal
+	sound:Play()
+
+	local rotation = 0
+	local connection
+
+	connection = RunService.Heartbeat:Connect(function(dt)
+
+		if not portal.Parent then
+			connection:Disconnect()
+			return
+		end
+
+		rotation += dt * 40
+
+		portal.CFrame =
+			CFrame.new(position)
+			* CFrame.Angles(
+				0,
+				math.rad(rotation),
+				math.rad(90)
+			)
+	end)
+
+	sound.Ended:Connect(function()
+		sound:Destroy()
+	end)
+
+	return portal
+end
+
+--------------------------------------------------
+-- EXPLOSIÓN
+--------------------------------------------------
+
+local function PurpleExplosion(position)
+
+	local effect = Instance.new("Part")
+
+	effect.Name = "PurpleExplosionEffect"
+	effect.Anchored = true
+	effect.CanCollide = false
+	effect.CanQuery = false
+	effect.CanTouch = false
+	effect.Transparency = 1
+	effect.Size = Vector3.new(1, 1, 1)
+	effect.Position = position
+	effect.Parent = workspace
+
+	local sound = Instance.new("Sound")
+	sound.SoundId = EXPLOSION_SOUND
+	sound.Volume = 3.5
+	sound.RollOffMaxDistance = 250
+	sound.Parent = effect
+	sound:Play()
+
+	local light = Instance.new("PointLight")
+	light.Color = Color3.fromRGB(180, 50, 255)
+	light.Brightness = 15
+	light.Range = 45
+	light.Parent = effect
+
+	local attachment = Instance.new("Attachment")
+	attachment.Parent = effect
+
+	local particles = Instance.new("ParticleEmitter")
+
+	particles.Texture =
+		"rbxasset://textures/particles/sparkles_main.dds"
+
+	particles.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(
+			0,
+			Color3.fromRGB(220, 80, 255)
+		),
+		ColorSequenceKeypoint.new(
+			0.4,
+			Color3.fromRGB(160, 20, 255)
+		),
+		ColorSequenceKeypoint.new(
+			1,
+			Color3.fromRGB(60, 0, 120)
+		)
+	})
+
+	particles.LightEmission = 1
+	particles.Lifetime =
+		NumberRange.new(0.6, 1.4)
+
+	particles.Speed =
+		NumberRange.new(25, 60)
+
+	particles.Rate = 0
+	particles.SpreadAngle =
+		Vector2.new(360, 360)
+
+	particles.Size =
+		NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 5),
+			NumberSequenceKeypoint.new(0.3, 11),
+			NumberSequenceKeypoint.new(1, 0)
+		})
+
+	particles.Parent = attachment
+	particles:Emit(100)
+
+	task.spawn(function()
+
+		for brightness = 15, 0, -2 do
+
+			if light.Parent then
+				light.Brightness = brightness
+			end
+
+			task.wait(0.05)
+		end
+	end)
+
+	Debris:AddItem(effect, 3)
+end
+
+--------------------------------------------------
+-- EXPLOTAR BOMBA
+--------------------------------------------------
+
+local function ExplodeBomb(bomb, velocity)
+
+	if not bomb or not bomb.Parent then
+		return
+	end
+
+	if velocity and velocity.Parent then
+		velocity:Destroy()
+	end
+
+	local position = bomb.Position
+
+	local explosion = Instance.new("Explosion")
+
+	explosion.Position = position
+	explosion.BlastRadius = 22
+	explosion.BlastPressure = 35000
+	explosion.DestroyJointRadiusPercent = 0
+	explosion.Parent = workspace
+
+	PurpleExplosion(position)
+
+	bomb:Destroy()
+end
+
+--------------------------------------------------
+-- DISPARAR PORTAL BOMB
+--------------------------------------------------
+
+local function FirePortalBomb()
+
+	if not aiming
+		or not marker
+		or not targetPosition then
+		return
+	end
+
+	local groundTarget = targetPosition
+
+	local skyPosition =
+		groundTarget + Vector3.new(0, 50, 0)
+
+	DestroyMarker()
+
+	targetPosition = nil
+	aiming = false
+	ready = false
+
+	local portal =
+		CreatePortal(skyPosition)
+
+	task.wait(PORTAL_TIME)
+
+	if not portal.Parent then
+		ready = true
+		return
+	end
+
+	local bomb = Instance.new("Part")
+
+	bomb.Name = "Bomb"
+	bomb.Shape = Enum.PartType.Ball
+	bomb.Size = Vector3.new(2, 2, 2)
+	bomb.Material = Enum.Material.SmoothPlastic
+	bomb.Color = Color3.fromRGB(10, 10, 10)
+	bomb.CanCollide = true
+	bomb.Position = portal.Position
+	bomb.Parent = workspace
+
+	portal:Destroy()
+
+	local direction =
+		groundTarget - bomb.Position
+
+	if direction.Magnitude > 0 then
+
+		local velocity =
+			Instance.new("BodyVelocity")
+
+		velocity.MaxForce =
+			Vector3.new(
+				math.huge,
+				math.huge,
+				math.huge
+			)
+
+		velocity.Velocity =
+			direction.Unit * BOMB_SPEED
+
+		velocity.Parent = bomb
+
+		local exploded = false
+
+		bomb.Touched:Connect(function(hit)
+
+			if exploded then
+				return
+			end
+
+			if hit:IsDescendantOf(Character) then
+				return
+			end
+
+			if hit.Name == "Portal3D"
+				or hit.Name == "TargetMarker" then
+				return
+			end
+
+			exploded = true
+
+			task.delay(1.5, function()
+				ExplodeBomb(bomb, velocity)
+			end)
+		end)
+
+		task.delay(7, function()
+
+			if bomb.Parent and not exploded then
+
+				exploded = true
+
+				ExplodeBomb(
+					bomb,
+					velocity
+				)
+			end
+		end)
+	else
+		bomb:Destroy()
+	end
+
+	task.delay(PORTAL_COOLDOWN, function()
+		ready = true
+	end)
+end
+
+--------------------------------------------------
+-- APUNTADO
+--------------------------------------------------
+
+local function StartAim()
+
+	if not ready or aiming then
+		return
+	end
+
+	aiming = true
+	targetPosition = nil
+
+	if touchAiming then
+		return
+	end
+
+	targetPosition =
+		GetRaycast(
+			UserInputService:GetMouseLocation()
+		)
+
+	if targetPosition then
+		marker =
+			CreateMarker(
+				targetPosition
+				+ Vector3.new(0, 0.2, 0)
+			)
+	end
+end
+
+--------------------------------------------------
+-- TOQUE EN CELULAR
+--------------------------------------------------
+
+UserInputService.TouchTapInWorld:Connect(
+	function(position, processed)
+
+		if processed
+			or not aiming
+			or not touchAiming then
+			return
+		end
+
+		local hit =
+			GetRaycast(position)
+
+		if not hit then
+			return
+		end
+
+		targetPosition = hit
+
+		if marker then
+			marker.Position =
+				hit + Vector3.new(0, 0.2, 0)
+		else
+			marker =
+				CreateMarker(
+					hit + Vector3.new(0, 0.2, 0)
+				)
+		end
+	end
+)
+
+--------------------------------------------------
+-- RATÓN / MARCADOR
+--------------------------------------------------
+
+RunService.RenderStepped:Connect(function()
+
+	if not aiming or touchAiming then
+		return
+	end
+
+	local position =
+		GetRaycast(
+			UserInputService:GetMouseLocation()
+		)
+
+	if position then
+
+		targetPosition = position
+
+		if marker then
+			marker.Position =
+				position
+				+ Vector3.new(0, 0.2, 0)
+		end
+	end
+end)
+
+--------------------------------------------------
+-- CONTROLES
+--------------------------------------------------
+
+UserInputService.InputBegan:Connect(
+	function(input, processed)
+
+		if processed then
+			return
+		end
+
+		if input.KeyCode == Enum.KeyCode.E then
+			StartAim()
+
+		elseif input.UserInputType ==
+			Enum.UserInputType.MouseButton1 then
+
+			if aiming and not touchAiming then
+				FirePortalBomb()
+			end
+
+		elseif input.KeyCode == Enum.KeyCode.Q
+			and aiming then
+
+			DestroyMarker()
+
+			targetPosition = nil
+			aiming = false
+			ready = true
+		end
+	end
+)
+
+--------------------------------------------------
+-- UI
+--------------------------------------------------
+
+local Gui = Instance.new("ScreenGui")
+Gui.Name = "RickPrimeWeapons"
+Gui.ResetOnSpawn = false
+Gui.Parent = Player:WaitForChild("PlayerGui")
+
+local Button = Instance.new("TextButton")
+
+Button.Size = UDim2.new(0, 230, 0, 45)
+Button.Position = UDim2.new(0.05, 0, 0.75, 0)
+
+Button.BackgroundColor3 =
+	Color3.fromRGB(25, 25, 35)
+
+Button.Text =
+	"🌀 PORTAL BOMB"
+
+Button.TextColor3 =
+	Color3.fromRGB(0, 255, 100)
+
+Button.Font =
+	Enum.Font.GothamBold
+
+Button.TextSize = 14
+Button.Active = true
+
+Button.Parent = Gui
+
+local Corner =
+	Instance.new("UICorner")
+
+Corner.CornerRadius =
+	UDim.new(0, 8)
+
+Corner.Parent = Button
+
+--------------------------------------------------
+-- BOTÓN ARRASTRABLE
+--------------------------------------------------
+
+local dragging = false
+local dragStart
+local startPosition
+local dragInput
+
+Button.InputBegan:Connect(function(input)
+
+	if input.UserInputType ==
+		Enum.UserInputType.MouseButton1
+		or input.UserInputType ==
+		Enum.UserInputType.Touch then
+
+		dragging = true
+		dragStart = input.Position
+		startPosition = Button.Position
+
+		input.Changed:Connect(function()
+
+			if input.UserInputState ==
+				Enum.UserInputState.End then
+
+				dragging = false
+			end
+		end)
+	end
+end)
+
+Button.InputChanged:Connect(function(input)
+
+	if input.UserInputType ==
+		Enum.UserInputType.MouseMovement
+		or input.UserInputType ==
+		Enum.UserInputType.Touch then
+
+		dragInput = input
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+
+	if input == dragInput
+		and dragging then
+
+		local delta =
+			input.Position - dragStart
+
+		Button.Position =
+			UDim2.new(
+				startPosition.X.Scale,
+				startPosition.X.Offset + delta.X,
+				startPosition.Y.Scale,
+				startPosition.Y.Offset + delta.Y
+			)
+	end
+end)
+
+--------------------------------------------------
+-- ACTIVAR PORTAL
+--------------------------------------------------
+
+Button.Activated:Connect(function()
+
+	if not aiming and ready then
+		StartAim()
+
+	elseif aiming then
+		FirePortalBomb()
+	end
+end)
+
+--------------------------------------------------
+-- RESPAWN
+--------------------------------------------------
+
+local function OnCharacterAdded(newCharacter)
+
+	Character = newCharacter
+
+	ToolEquipped = false
+	PlasmaGun = nil
+	CanShoot = true
+
+	aiming = false
+	ready = true
+	targetPosition = nil
+
+	DestroyMarker()
+
+	task.wait(1)
+
+	CreatePlasmaPistol()
+end
+
+Player.CharacterAdded:Connect(OnCharacterAdded)
+
+--------------------------------------------------
+-- INICIO
+--------------------------------------------------
+
+CreatePlasmaPistol()
+
+print("=== SISTEMA CARGADO ===")
+print("Plasma Pistol + Portal Bomb")

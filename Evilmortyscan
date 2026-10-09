@@ -1,10 +1,10 @@
 --[[
-    EVIL MORTY SCANNER - V10
-    - INVENTARIO muestra TODOS los objetos sin limite
-    - Lista completa de Tools (equipadas + Backpack)
-    - Todo en amarillo
-    - Imagen centrada en la cabeza
-    - Compatible: Delta Executor / Roblox Luau
+EVIL MORTY SCANNER - V10
+- INVENTARIO muestra TODOS los objetos sin limite
+- Lista completa de Tools (equipadas + Backpack)
+- Todo en amarillo
+- Imagen centrada en la cabeza
+- Compatible: Delta Executor / Roblox Luau
 --]]
 
 -- ============================================================
@@ -22,25 +22,25 @@ local Camera = workspace.CurrentCamera
 -- CONFIGURACION
 -- ============================================================
 local CONFIG = {
-    BRAIN_IMAGE = "rbxassetid://105752278503706",
-    WEAPON_NAME_LIMIT = 18,
-    COLORS = {
-        BLACK = Color3.fromRGB(0, 0, 0),
-        RED = Color3.fromRGB(200, 20, 20),
-        YELLOW = Color3.fromRGB(255, 210, 0),
-    },
+BRAIN_IMAGE = "rbxassetid://105752278503706",
+WEAPON_NAME_LIMIT = 18,
+COLORS = {
+BLACK = Color3.fromRGB(0, 0, 0),
+RED = Color3.fromRGB(200, 20, 20),
+YELLOW = Color3.fromRGB(255, 210, 0),
+},
 }
 
 -- ============================================================
 -- LIMPIAR GUI ANTERIOR
 -- ============================================================
 pcall(function()
-    local old = CoreGui:FindFirstChild("EvilMortyScanner")
-    if old then old:Destroy() end
+local old = CoreGui:FindFirstChild("EvilMortyScanner")
+if old then old:Destroy() end
 end)
 pcall(function()
-    local old = PlayerGui:FindFirstChild("EvilMortyScanner")
-    if old then old:Destroy() end
+local old = PlayerGui:FindFirstChild("EvilMortyScanner")
+if old then old:Destroy() end
 end)
 
 -- ============================================================
@@ -59,30 +59,30 @@ if not ok then ScreenGui.Parent = PlayerGui end
 -- DRAGGABLE
 -- ============================================================
 local function makeDraggable(frame)
-    local dragging, dragStart, startPos = false, nil, nil
-    frame.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = frame.Position
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then
-                    dragging = false
-                end
-            end)
-        end
-    end)
-    frame.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
-        or input.UserInputType == Enum.UserInputType.Touch) then
-            local delta = input.Position - dragStart
-            frame.Position = UDim2.new(
-                startPos.X.Scale, startPos.X.Offset + delta.X,
-                startPos.Y.Scale, startPos.Y.Offset + delta.Y
-            )
-        end
-    end)
+local dragging, dragStart, startPos = false, nil, nil
+frame.InputBegan:Connect(function(input)
+if input.UserInputType == Enum.UserInputType.MouseButton1
+or input.UserInputType == Enum.UserInputType.Touch then
+dragging = true
+dragStart = input.Position
+startPos = frame.Position
+input.Changed:Connect(function()
+if input.UserInputState == Enum.UserInputState.End then
+dragging = false
+end
+end)
+end
+end)
+frame.InputChanged:Connect(function(input)
+if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+or input.UserInputType == Enum.UserInputType.Touch) then
+local delta = input.Position - dragStart
+frame.Position = UDim2.new(
+startPos.X.Scale, startPos.X.Offset + delta.X,
+startPos.Y.Scale, startPos.Y.Offset + delta.Y
+)
+end
+end)
 end
 
 -- ============================================================
@@ -141,411 +141,419 @@ laser.Parent = ScreenGui
 -- ESTADO
 -- ============================================================
 local state = {
-    target = nil,
-    active = false,
-    billboard = nil,
-    statusLabel = nil,
-    inventoryRows = {},
-    inventoryContainer = nil,
-    updateConn = nil,
+target = nil,
+active = false,
+billboard = nil,
+statusLabel = nil,
+inventoryRows = {},
+inventoryContainer = nil,
+updateConn = nil,
 }
 
 -- ============================================================
 -- HELPERS
 -- ============================================================
 local function getMovementState(character)
-    if not character or not character.Parent then return "UNKNOWN" end
-    local hum = character:FindFirstChildOfClass("Humanoid")
-    local root = character:FindFirstChild("HumanoidRootPart")
-    if not hum or not root then return "UNKNOWN" end
+if not character or not character.Parent then return "UNKNOWN" end
+local hum = character:FindFirstChildOfClass("Humanoid")
+local root = character:FindFirstChild("HumanoidRootPart")
+if not hum or not root then return "UNKNOWN" end
 
-    local s = hum:GetState()
-    if s == Enum.HumanoidStateType.Jumping then return "JUMPING"
-    elseif s == Enum.HumanoidStateType.Freefall then return "FALLING"
-    elseif s == Enum.HumanoidStateType.Climbing then return "CLIMBING"
-    elseif s == Enum.HumanoidStateType.Swimming then return "SWIMMING"
-    elseif s == Enum.HumanoidStateType.Seated then return "IDLE" end
+local s = hum:GetState()  
+if s == Enum.HumanoidStateType.Jumping then return "JUMPING"  
+elseif s == Enum.HumanoidStateType.Freefall then return "FALLING"  
+elseif s == Enum.HumanoidStateType.Climbing then return "CLIMBING"  
+elseif s == Enum.HumanoidStateType.Swimming then return "SWIMMING"  
+elseif s == Enum.HumanoidStateType.Seated then return "IDLE" end  
 
-    local vel = root.AssemblyLinearVelocity
-    local horizSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
-    local vertSpeed = vel.Y
+local vel = root.AssemblyLinearVelocity  
+local horizSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude  
+local vertSpeed = vel.Y  
 
-    if vertSpeed < -20 then return "FALLING"
-    elseif vertSpeed > 15 then return "JUMPING" end
+if vertSpeed < -20 then return "FALLING"  
+elseif vertSpeed > 15 then return "JUMPING" end  
 
-    if horizSpeed < 1 then return "IDLE"
-    elseif horizSpeed < hum.WalkSpeed + 1 then return "WALKING"
-    else return "RUNNING" end
+if horizSpeed < 1 then return "IDLE"  
+elseif horizSpeed < hum.WalkSpeed + 1 then return "WALKING"  
+else return "RUNNING" end
+
 end
 
 local function getWeaponName(character)
-    if not character then return "UNKNOWN" end
-    local tool = character:FindFirstChildOfClass("Tool")
-    if not tool then return "UNKNOWN" end
-    if #tool.Name > CONFIG.WEAPON_NAME_LIMIT then return "NO SE PUEDE ESCANEAR" end
-    return tool.Name
+if not character then return "UNKNOWN" end
+local tool = character:FindFirstChildOfClass("Tool")
+if not tool then return "UNKNOWN" end
+if #tool.Name > CONFIG.WEAPON_NAME_LIMIT then return "NO SE PUEDE ESCANEAR" end
+return tool.Name
 end
 
 -- Devuelve lista completa de herramientas (equipadas + backpack), sin limite
 local function getInventoryList(character, player)
-    local items = {}
-    local seen = {}
-    if not character then return items end
+local items = {}
+local seen = {}
+if not character then return items end
 
-    for _, o in ipairs(character:GetChildren()) do
-        if o:IsA("Tool") and not seen[o.Name] then
-            seen[o.Name] = true
-            table.insert(items, o.Name)
-        end
-    end
+for _, o in ipairs(character:GetChildren()) do  
+    if o:IsA("Tool") and not seen[o.Name] then  
+        seen[o.Name] = true  
+        table.insert(items, o.Name)  
+    end  
+end  
 
-    if player then
-        local backpack = player:FindFirstChildOfClass("Backpack")
-        if backpack then
-            for _, o in ipairs(backpack:GetChildren()) do
-                if o:IsA("Tool") and not seen[o.Name] then
-                    seen[o.Name] = true
-                    table.insert(items, o.Name)
-                end
-            end
-        end
-    end
+if player then  
+    local backpack = player:FindFirstChildOfClass("Backpack")  
+    if backpack then  
+        for _, o in ipairs(backpack:GetChildren()) do  
+            if o:IsA("Tool") and not seen[o.Name] then  
+                seen[o.Name] = true  
+                table.insert(items, o.Name)  
+            end  
+        end  
+    end  
+end  
 
-    return items
+return items
+
 end
 
 local function getDistance()
-    local myChar = LocalPlayer.Character
-    local tgtChar = state.target and state.target.Character
-    if not myChar or not tgtChar then return nil end
-    local a = myChar:FindFirstChild("HumanoidRootPart")
-    local b = tgtChar:FindFirstChild("HumanoidRootPart")
-    if not a or not b then return nil end
-    return math.floor((a.Position - b.Position).Magnitude)
+local myChar = LocalPlayer.Character
+local tgtChar = state.target and state.target.Character
+if not myChar or not tgtChar then return nil end
+local a = myChar:FindFirstChild("HumanoidRootPart")
+local b = tgtChar:FindFirstChild("HumanoidRootPart")
+if not a or not b then return nil end
+return math.floor((a.Position - b.Position).Magnitude)
 end
 
 local function findClosestPlayer()
-    local myChar = LocalPlayer.Character
-    if not myChar then return nil end
-    local myRoot = myChar:FindFirstChild("HumanoidRootPart")
-    if not myRoot then return nil end
+local myChar = LocalPlayer.Character
+if not myChar then return nil end
+local myRoot = myChar:FindFirstChild("HumanoidRootPart")
+if not myRoot then return nil end
 
-    local closest, minDist = nil, math.huge
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer then
-            local char = plr.Character
-            if char then
-                local root = char:FindFirstChild("HumanoidRootPart")
-                local hum = char:FindFirstChildOfClass("Humanoid")
-                if root and hum and hum.Health > 0 then
-                    local d = (root.Position - myRoot.Position).Magnitude
-                    if d < minDist then minDist = d; closest = plr end
-                end
-            end
-        end
-    end
-    return closest
+local closest, minDist = nil, math.huge  
+for _, plr in ipairs(Players:GetPlayers()) do  
+    if plr ~= LocalPlayer then  
+        local char = plr.Character  
+        if char then  
+            local root = char:FindFirstChild("HumanoidRootPart")  
+            local hum = char:FindFirstChildOfClass("Humanoid")  
+            if root and hum and hum.Health > 0 then  
+                local d = (root.Position - myRoot.Position).Magnitude  
+                if d < minDist then minDist = d; closest = plr end  
+            end  
+        end  
+    end  
+end  
+return closest
+
 end
 
 -- ============================================================
 -- CREAR BILLBOARD
 -- ============================================================
 local function createBillboard(head, targetName)
-    local bb = Instance.new("BillboardGui")
-    bb.Name = "EvilMortyScan"
-    bb.Size = UDim2.new(0, 150, 0, 180)
-    bb.StudsOffsetWorldSpace = Vector3.new(0, -1.1, 0)
-    bb.AlwaysOnTop = true
-    bb.LightInfluence = 0
-    bb.Adornee = head
-    bb.Parent = head
+local bb = Instance.new("BillboardGui")
+bb.Name = "EvilMortyScan"
+bb.Size = UDim2.new(0, 150, 0, 180)
+bb.StudsOffsetWorldSpace = Vector3.new(0, -1.1, 0)
+bb.AlwaysOnTop = true
+bb.LightInfluence = 0
+bb.Adornee = head
+bb.Parent = head
 
-    local root = Instance.new("Frame")
-    root.Size = UDim2.new(1, 0, 1, 0)
-    root.BackgroundTransparency = 1
-    root.Parent = bb
+local root = Instance.new("Frame")  
+root.Size = UDim2.new(1, 0, 1, 0)  
+root.BackgroundTransparency = 1  
+root.Parent = bb  
 
-    -- NOMBRE
-    local nameLbl = Instance.new("TextLabel")
-    nameLbl.Size = UDim2.new(1, 0, 0, 20)
-    nameLbl.Position = UDim2.new(0, 0, 0, 0)
-    nameLbl.BackgroundTransparency = 1
-    nameLbl.Text = targetName
-    nameLbl.TextColor3 = CONFIG.COLORS.YELLOW
-    nameLbl.Font = Enum.Font.Code
-    nameLbl.TextScaled = true
-    nameLbl.TextStrokeTransparency = 0
-    nameLbl.TextStrokeColor3 = CONFIG.COLORS.BLACK
-    nameLbl.Parent = root
+-- NOMBRE  
+local nameLbl = Instance.new("TextLabel")  
+nameLbl.Size = UDim2.new(1, 0, 0, 20)  
+nameLbl.Position = UDim2.new(0, 0, 0, 0)  
+nameLbl.BackgroundTransparency = 1  
+nameLbl.Text = targetName  
+nameLbl.TextColor3 = CONFIG.COLORS.YELLOW  
+nameLbl.Font = Enum.Font.Code  
+nameLbl.TextScaled = true  
+nameLbl.TextStrokeTransparency = 0  
+nameLbl.TextStrokeColor3 = CONFIG.COLORS.BLACK  
+nameLbl.Parent = root  
 
-    -- IMAGEN
-    local brain = Instance.new("ImageLabel")
-    brain.Size = UDim2.new(0, 70, 0, 70)
-    brain.Position = UDim2.new(0.5, -35, 0, 22)
-    brain.BackgroundTransparency = 1
-    brain.Image = CONFIG.BRAIN_IMAGE
-    brain.ScaleType = Enum.ScaleType.Fit
-    brain.Parent = root
+-- IMAGEN  
+local brain = Instance.new("ImageLabel")  
+brain.Size = UDim2.new(0, 70, 0, 70)  
+brain.Position = UDim2.new(0.5, -35, 0, 22)  
+brain.BackgroundTransparency = 1  
+brain.Image = CONFIG.BRAIN_IMAGE  
+brain.ScaleType = Enum.ScaleType.Fit  
+brain.Parent = root  
 
-    -- STATUS
-    local statusLbl = Instance.new("TextLabel")
-    statusLbl.Size = UDim2.new(1, 0, 0, 16)
-    statusLbl.Position = UDim2.new(0, 0, 0, 94)
-    statusLbl.BackgroundColor3 = CONFIG.COLORS.BLACK
-    statusLbl.BackgroundTransparency = 0.3
-    statusLbl.BorderSizePixel = 0
-    statusLbl.Text = "STATUS: IDLE"
-    statusLbl.TextColor3 = CONFIG.COLORS.YELLOW
-    statusLbl.Font = Enum.Font.Code
-    statusLbl.TextScaled = true
-    statusLbl.Parent = root
+-- STATUS  
+local statusLbl = Instance.new("TextLabel")  
+statusLbl.Size = UDim2.new(1, 0, 0, 16)  
+statusLbl.Position = UDim2.new(0, 0, 0, 94)  
+statusLbl.BackgroundColor3 = CONFIG.COLORS.BLACK  
+statusLbl.BackgroundTransparency = 0.3  
+statusLbl.BorderSizePixel = 0  
+statusLbl.Text = "STATUS: IDLE"  
+statusLbl.TextColor3 = CONFIG.COLORS.YELLOW  
+statusLbl.Font = Enum.Font.Code  
+statusLbl.TextScaled = true  
+statusLbl.Parent = root  
 
-    local stc2 = Instance.new("UICorner", statusLbl); stc2.CornerRadius = UDim.new(0, 3)
-    local sts2 = Instance.new("UIStroke", statusLbl)
-    sts2.Color = CONFIG.COLORS.YELLOW; sts2.Thickness = 1
+local stc2 = Instance.new("UICorner", statusLbl); stc2.CornerRadius = UDim.new(0, 3)  
+local sts2 = Instance.new("UIStroke", statusLbl)  
+sts2.Color = CONFIG.COLORS.YELLOW; sts2.Thickness = 1  
 
-    -- PANEL DE DATOS
-    local panel = Instance.new("Frame")
-    panel.Size = UDim2.new(1, 0, 0, 0)
-    panel.Position = UDim2.new(0, 0, 0, 114)
-    panel.AutomaticSize = Enum.AutomaticSize.Y
-    panel.BackgroundColor3 = CONFIG.COLORS.BLACK
-    panel.BackgroundTransparency = 0.2
-    panel.BorderSizePixel = 0
-    panel.Parent = root
+-- PANEL DE DATOS  
+local panel = Instance.new("Frame")  
+panel.Size = UDim2.new(1, 0, 0, 0)  
+panel.Position = UDim2.new(0, 0, 0, 114)  
+panel.AutomaticSize = Enum.AutomaticSize.Y  
+panel.BackgroundColor3 = CONFIG.COLORS.BLACK  
+panel.BackgroundTransparency = 0.2  
+panel.BorderSizePixel = 0  
+panel.Parent = root  
 
-    local pc = Instance.new("UICorner", panel); pc.CornerRadius = UDim.new(0, 4)
-    local ps = Instance.new("UIStroke", panel)
-    ps.Color = CONFIG.COLORS.YELLOW; ps.Thickness = 1
+local pc = Instance.new("UICorner", panel); pc.CornerRadius = UDim.new(0, 4)  
+local ps = Instance.new("UIStroke", panel)  
+ps.Color = CONFIG.COLORS.YELLOW; ps.Thickness = 1  
 
-    local ppad = Instance.new("UIPadding", panel)
-    ppad.PaddingTop = UDim.new(0, 3)
-    ppad.PaddingBottom = UDim.new(0, 3)
-    ppad.PaddingLeft = UDim.new(0, 5)
-    ppad.PaddingRight = UDim.new(0, 5)
+local ppad = Instance.new("UIPadding", panel)  
+ppad.PaddingTop = UDim.new(0, 3)  
+ppad.PaddingBottom = UDim.new(0, 3)  
+ppad.PaddingLeft = UDim.new(0, 5)  
+ppad.PaddingRight = UDim.new(0, 5)  
 
-    local pl = Instance.new("UIListLayout", panel)
-    pl.Padding = UDim.new(0, 1)
-    pl.SortOrder = Enum.SortOrder.LayoutOrder
+local pl = Instance.new("UIListLayout", panel)  
+pl.Padding = UDim.new(0, 1)  
+pl.SortOrder = Enum.SortOrder.LayoutOrder  
 
-    local function row(order, txt)
-        local l = Instance.new("TextLabel")
-        l.Size = UDim2.new(1, 0, 0, 13)
-        l.BackgroundTransparency = 1
-        l.Text = txt
-        l.TextColor3 = CONFIG.COLORS.YELLOW
-        l.Font = Enum.Font.Code
-        l.TextSize = 10
-        l.TextXAlignment = Enum.TextXAlignment.Left
-        l.TextWrapped = true
-        l.LayoutOrder = order
-        l.Parent = panel
-        return l
-    end
+local function row(order, txt)  
+    local l = Instance.new("TextLabel")  
+    l.Size = UDim2.new(1, 0, 0, 13)  
+    l.BackgroundTransparency = 1  
+    l.Text = txt  
+    l.TextColor3 = CONFIG.COLORS.YELLOW  
+    l.Font = Enum.Font.Code  
+    l.TextSize = 10  
+    l.TextXAlignment = Enum.TextXAlignment.Left  
+    l.TextWrapped = true  
+    l.LayoutOrder = order  
+    l.Parent = panel  
+    return l  
+end  
 
-    state.dataLabels = {
-        subject   = row(1, "SUJETO: --"),
-        health    = row(2, "SALUD: --"),
-        weapon    = row(3, "ARMA: --"),
-    }
+state.dataLabels = {  
+    subject   = row(1, "SUJETO: --"),  
+    health    = row(2, "SALUD: --"),  
+    weapon    = row(3, "ARMA: --"),  
+}  
 
-    -- Cabecera "INVENTARIO:" separada
-    local invHeader = Instance.new("TextLabel")
-    invHeader.Size = UDim2.new(1, 0, 0, 13)
-    invHeader.BackgroundTransparency = 1
-    invHeader.Text = "INVENTARIO:"
-    invHeader.TextColor3 = CONFIG.COLORS.YELLOW
-    invHeader.Font = Enum.Font.Code
-    invHeader.TextSize = 10
-    invHeader.TextXAlignment = Enum.TextXAlignment.Left
-    invHeader.LayoutOrder = 4
-    invHeader.Parent = panel
-    state.inventoryHeader = invHeader
+-- Cabecera "INVENTARIO:" separada  
+local invHeader = Instance.new("TextLabel")  
+invHeader.Size = UDim2.new(1, 0, 0, 13)  
+invHeader.BackgroundTransparency = 1  
+invHeader.Text = "INVENTARIO:"  
+invHeader.TextColor3 = CONFIG.COLORS.YELLOW  
+invHeader.Font = Enum.Font.Code  
+invHeader.TextSize = 10  
+invHeader.TextXAlignment = Enum.TextXAlignment.Left  
+invHeader.LayoutOrder = 4  
+invHeader.Parent = panel  
+state.inventoryHeader = invHeader  
 
-    -- Contenedor de items del inventario (una fila por item, sin limite)
-    local invContainer = Instance.new("Frame")
-    invContainer.Size = UDim2.new(1, 0, 0, 0)
-    invContainer.AutomaticSize = Enum.AutomaticSize.Y
-    invContainer.BackgroundTransparency = 1
-    invContainer.LayoutOrder = 5
-    invContainer.Parent = panel
+-- Contenedor de items del inventario (una fila por item, sin limite)  
+local invContainer = Instance.new("Frame")  
+invContainer.Size = UDim2.new(1, 0, 0, 0)  
+invContainer.AutomaticSize = Enum.AutomaticSize.Y  
+invContainer.BackgroundTransparency = 1  
+invContainer.LayoutOrder = 5  
+invContainer.Parent = panel  
 
-    local invLayout = Instance.new("UIListLayout", invContainer)
-    invLayout.Padding = UDim.new(0, 1)
-    invLayout.SortOrder = Enum.SortOrder.LayoutOrder
+local invLayout = Instance.new("UIListLayout", invContainer)  
+invLayout.Padding = UDim.new(0, 1)  
+invLayout.SortOrder = Enum.SortOrder.LayoutOrder  
 
-    state.inventoryContainer = invContainer
-    state.inventoryRows = {}
+state.inventoryContainer = invContainer  
+state.inventoryRows = {}  
 
-    -- Filas restantes
-    state.dataLabels.movement = row(6, "MOVIMIENTO: --")
-    state.dataLabels.distance = row(7, "DISTANCIA: --")
+-- Filas restantes  
+state.dataLabels.movement = row(6, "MOVIMIENTO: --")  
+state.dataLabels.distance = row(7, "DISTANCIA: --")  
 
-    state.billboard = bb
-    state.statusLabel = statusLbl
-    return bb
+state.billboard = bb  
+state.statusLabel = statusLbl  
+return bb
+
 end
 
 -- ============================================================
 -- ACTUALIZAR INVENTARIO (lista completa, sin limite)
 -- ============================================================
 local function refreshInventory(character, player)
-    local container = state.inventoryContainer
-    if not container then return end
+local container = state.inventoryContainer
+if not container then return end
 
-    local items = getInventoryList(character, player)
+local items = getInventoryList(character, player)  
 
-    -- Si no hay items, mostrar "VACIO"
-    if #items == 0 then
-        if #state.inventoryRows == 0 then
-            local l = Instance.new("TextLabel")
-            l.Size = UDim2.new(1, 0, 0, 12)
-            l.BackgroundTransparency = 1
-            l.Text = "  - VACIO"
-            l.TextColor3 = CONFIG.COLORS.YELLOW
-            l.Font = Enum.Font.Code
-            l.TextSize = 10
-            l.TextXAlignment = Enum.TextXAlignment.Left
-            l.TextWrapped = true
-            l.Parent = container
-            table.insert(state.inventoryRows, l)
-        else
-            state.inventoryRows[1].Text = "  - VACIO"
-            for i = #state.inventoryRows, 2, -1 do
-                state.inventoryRows[i]:Destroy()
-                state.inventoryRows[i] = nil
-            end
-        end
-        return
-    end
+-- Si no hay items, mostrar "VACIO"  
+if #items == 0 then  
+    if #state.inventoryRows == 0 then  
+        local l = Instance.new("TextLabel")  
+        l.Size = UDim2.new(1, 0, 0, 12)  
+        l.BackgroundTransparency = 1  
+        l.Text = "  - VACIO"  
+        l.TextColor3 = CONFIG.COLORS.YELLOW  
+        l.Font = Enum.Font.Code  
+        l.TextSize = 10  
+        l.TextXAlignment = Enum.TextXAlignment.Left  
+        l.TextWrapped = true  
+        l.Parent = container  
+        table.insert(state.inventoryRows, l)  
+    else  
+        state.inventoryRows[1].Text = "  - VACIO"  
+        for i = #state.inventoryRows, 2, -1 do  
+            state.inventoryRows[i]:Destroy()  
+            state.inventoryRows[i] = nil  
+        end  
+    end  
+    return  
+end  
 
-    -- Reutilizar filas existentes
-    for i = 1, #items do
-        local rowObj = state.inventoryRows[i]
-        if not rowObj then
-            rowObj = Instance.new("TextLabel")
-            rowObj.Size = UDim2.new(1, 0, 0, 12)
-            rowObj.BackgroundTransparency = 1
-            rowObj.TextColor3 = CONFIG.COLORS.YELLOW
-            rowObj.Font = Enum.Font.Code
-            rowObj.TextSize = 10
-            rowObj.TextXAlignment = Enum.TextXAlignment.Left
-            rowObj.TextWrapped = true
-            rowObj.LayoutOrder = i
-            rowObj.Parent = container
-            state.inventoryRows[i] = rowObj
-        end
-        rowObj.Text = "  - " .. items[i]
-    end
+-- Reutilizar filas existentes  
+for i = 1, #items do  
+    local rowObj = state.inventoryRows[i]  
+    if not rowObj then  
+        rowObj = Instance.new("TextLabel")  
+        rowObj.Size = UDim2.new(1, 0, 0, 12)  
+        rowObj.BackgroundTransparency = 1  
+        rowObj.TextColor3 = CONFIG.COLORS.YELLOW  
+        rowObj.Font = Enum.Font.Code  
+        rowObj.TextSize = 10  
+        rowObj.TextXAlignment = Enum.TextXAlignment.Left  
+        rowObj.TextWrapped = true  
+        rowObj.LayoutOrder = i  
+        rowObj.Parent = container  
+        state.inventoryRows[i] = rowObj  
+    end  
+    rowObj.Text = "  - " .. items[i]  
+end  
 
-    -- Eliminar filas sobrantes
-    for i = #state.inventoryRows, #items + 1, -1 do
-        state.inventoryRows[i]:Destroy()
-        state.inventoryRows[i] = nil
-    end
+-- Eliminar filas sobrantes  
+for i = #state.inventoryRows, #items + 1, -1 do  
+    state.inventoryRows[i]:Destroy()  
+    state.inventoryRows[i] = nil  
+end
+
 end
 
 -- ============================================================
 -- ACTUALIZAR DATOS
 -- ============================================================
 local function refreshData()
-    if not state.target or not state.billboard then return end
-    local char = state.target.Character
-    local L = state.dataLabels
+if not state.target or not state.billboard then return end
+local char = state.target.Character
+local L = state.dataLabels
 
-    if not char or not char.Parent then
-        L.subject.Text   = "SUJETO: TARGET LOST"
-        L.health.Text    = "SALUD: --"
-        L.weapon.Text    = "ARMA: --"
-        L.movement.Text  = "MOVIMIENTO: --"
-        L.distance.Text  = "DISTANCIA: --"
-        if state.statusLabel then state.statusLabel.Text = "STATUS: LOST" end
-        refreshInventory(nil, nil)
-        return
-    end
+if not char or not char.Parent then  
+    L.subject.Text   = "SUJETO: TARGET LOST"  
+    L.health.Text    = "SALUD: --"  
+    L.weapon.Text    = "ARMA: --"  
+    L.movement.Text  = "MOVIMIENTO: --"  
+    L.distance.Text  = "DISTANCIA: --"  
+    if state.statusLabel then state.statusLabel.Text = "STATUS: LOST" end  
+    refreshInventory(nil, nil)  
+    return  
+end  
 
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    local moveState = getMovementState(char)
+local hum = char:FindFirstChildOfClass("Humanoid")  
+local moveState = getMovementState(char)  
 
-    L.subject.Text = "SUJETO: " .. state.target.Name
-    if hum then
-        L.health.Text = string.format("SALUD: %d / %d",
-            math.floor(hum.Health), math.floor(hum.MaxHealth))
-    else
-        L.health.Text = "SALUD: UNKNOWN"
-    end
-    L.weapon.Text   = "ARMA: " .. getWeaponName(char)
-    L.movement.Text = "MOVIMIENTO: " .. moveState
-    local d = getDistance()
-    L.distance.Text = d and ("DISTANCIA: " .. d .. " studs") or "DISTANCIA: UNKNOWN"
+L.subject.Text = "SUJETO: " .. state.target.Name  
+if hum then  
+    L.health.Text = string.format("SALUD: %d / %d",  
+        math.floor(hum.Health), math.floor(hum.MaxHealth))  
+else  
+    L.health.Text = "SALUD: UNKNOWN"  
+end  
+L.weapon.Text   = "ARMA: " .. getWeaponName(char)  
+L.movement.Text = "MOVIMIENTO: " .. moveState  
+local d = getDistance()  
+L.distance.Text = d and ("DISTANCIA: " .. d .. " studs") or "DISTANCIA: UNKNOWN"  
 
-    if state.statusLabel then
-        state.statusLabel.Text = "STATUS: " .. moveState
-    end
+if state.statusLabel then  
+    state.statusLabel.Text = "STATUS: " .. moveState  
+end  
 
-    -- Inventario completo (equipado + Backpack)
-    refreshInventory(char, state.target)
+-- Inventario completo (equipado + Backpack)  
+refreshInventory(char, state.target)
+
 end
 
 -- ============================================================
 -- ACTUALIZAR LASER
 -- ============================================================
 local function updateLaser()
-    if not state.active or not state.target then
-        laser.Visible = false
-        return
-    end
-    local char = state.target.Character
-    if not char then laser.Visible = false; return end
-    local head = char:FindFirstChild("Head")
-    if not head then laser.Visible = false; return end
+if not state.active or not state.target then
+laser.Visible = false
+return
+end
+local char = state.target.Character
+if not char then laser.Visible = false; return end
+local head = char:FindFirstChild("Head")
+if not head then laser.Visible = false; return end
 
-    local originScreen = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
-    local targetScreen, onScreen = Camera:WorldToViewportPoint(head.Position)
-    if not onScreen then laser.Visible = false; return end
+local originScreen = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)  
+local targetScreen, onScreen = Camera:WorldToViewportPoint(head.Position)  
+if not onScreen then laser.Visible = false; return end  
 
-    local targetVec = Vector2.new(targetScreen.X, targetScreen.Y)
-    local delta = targetVec - originScreen
-    local length = delta.Magnitude
-    local angle = math.deg(math.atan2(delta.Y, delta.X))
+local targetVec = Vector2.new(targetScreen.X, targetScreen.Y)  
+local delta = targetVec - originScreen  
+local length = delta.Magnitude  
+local angle = math.deg(math.atan2(delta.Y, delta.X))  
 
-    laser.Visible = true
-    laser.Size = UDim2.new(0, length, 0, 1)
-    laser.Position = UDim2.new(0, originScreen.X, 0, originScreen.Y)
-    laser.Rotation = angle
+laser.Visible = true  
+laser.Size = UDim2.new(0, length, 0, 1)  
+laser.Position = UDim2.new(0, originScreen.X, 0, originScreen.Y)  
+laser.Rotation = angle
+
 end
 
 -- ============================================================
 -- INICIAR ESCANEO
 -- ============================================================
 local function startScan()
-    if state.billboard then state.billboard:Destroy(); state.billboard = nil end
-    state.inventoryRows = {}
+if state.billboard then state.billboard:Destroy(); state.billboard = nil end
+state.inventoryRows = {}
 
-    local target = findClosestPlayer()
-    if not target then return end
-    local char = target.Character
-    if not char then return end
-    local head = char:FindFirstChild("Head")
-    if not head then return end
+local target = findClosestPlayer()  
+if not target then return end  
+local char = target.Character  
+if not char then return end  
+local head = char:FindFirstChild("Head")  
+if not head then return end  
 
-    state.target = target
-    state.active = true
+state.target = target  
+state.active = true  
 
-    createBillboard(head, target.Name)
-    updateLaser()
-    refreshData()
+createBillboard(head, target.Name)  
+updateLaser()  
+refreshData()
+
 end
 
 -- ============================================================
 -- DETENER ESCANEO
 -- ============================================================
 local function stopScan()
-    state.active = false
-    state.target = nil
-    if state.billboard then state.billboard:Destroy(); state.billboard = nil end
-    state.inventoryRows = {}
-    laser.Visible = false
+state.active = false
+state.target = nil
+if state.billboard then state.billboard:Destroy(); state.billboard = nil end
+state.inventoryRows = {}
+laser.Visible = false
 end
 
 -- ============================================================
@@ -553,26 +561,27 @@ end
 -- ============================================================
 if state.updateConn then state.updateConn:Disconnect() end
 state.updateConn = RunService.RenderStepped:Connect(function()
-    if not state.active or not state.target then return end
+if not state.active or not state.target then return end
 
-    local char = state.target.Character
-    if not char then
-        if state.billboard then state.billboard.Enabled = false end
-        laser.Visible = false
-        return
-    end
-    local head = char:FindFirstChild("Head")
-    if not head then return end
+local char = state.target.Character  
+if not char then  
+    if state.billboard then state.billboard.Enabled = false end  
+    laser.Visible = false  
+    return  
+end  
+local head = char:FindFirstChild("Head")  
+if not head then return end  
 
-    if not state.billboard or state.billboard.Adornee ~= head then
-        if state.billboard then state.billboard:Destroy() end
-        state.inventoryRows = {}
-        createBillboard(head, state.target.Name)
-    end
+if not state.billboard or state.billboard.Adornee ~= head then  
+    if state.billboard then state.billboard:Destroy() end  
+    state.inventoryRows = {}  
+    createBillboard(head, state.target.Name)  
+end  
 
-    state.billboard.Enabled = true
-    updateLaser()
-    refreshData()
+state.billboard.Enabled = true  
+updateLaser()  
+refreshData()
+
 end)
 -- ============================================================
 -- BOTONES
@@ -583,4 +592,3 @@ stopBtn.MouseButton1Click:Connect(stopScan)
 -- ============================================================
 -- FIN
 -- ============================================================
-```

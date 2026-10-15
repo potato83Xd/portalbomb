@@ -1,0 +1,505 @@
+-- ============================================================
+-- GIGANTIC FLICK v4 - Delta Executor
+-- Réplica del video + botón movible + cámara arreglada
+-- ============================================================
+
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris")
+
+local jugador = Players.LocalPlayer
+local playerGui = jugador:WaitForChild("PlayerGui")
+local cam = workspace.CurrentCamera
+
+-- Configuración
+local TECLA = Enum.KeyCode.E
+local DISTANCIA = 55
+local TIEMPO_DASH = 0.7
+local COOLDOWN = 3
+local ALTURA_CAMARA = 38
+local ocupado = false
+
+-- Anti-duplicados al re-ejecutar
+local env = getgenv and getgenv() or _G
+if env.FlickConn then env.FlickConn:Disconnect() end
+local viejo = playerGui:FindFirstChild("GiganticFlickUI")
+if viejo then viejo:Destroy() end
+
+-- ------------------------------------------------------------
+-- Utilidades
+-- ------------------------------------------------------------
+
+local function tw(obj, dur, props)
+    local t = TweenService:Create(
+        obj,
+        TweenInfo.new(dur, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        props
+    )
+    t:Play()
+    return t
+end
+
+local function sueloY(pos, char)
+    local rp = RaycastParams.new()
+    rp.FilterDescendantsInstances = {char}
+    local r = workspace:Raycast(pos + Vector3.new(0, 3, 0), Vector3.new(0, -60, 0), rp)
+    return r and r.Position.Y or (pos.Y - 3)
+end
+
+-- Parte plana en el piso con SurfaceGui arriba
+local function plano(pos, tam)
+    local p = Instance.new("Part")
+    p.Anchored, p.CanCollide, p.CanQuery, p.CanTouch = true, false, false, false
+    p.Transparency = 1
+    p.Size = Vector3.new(tam, 0.2, tam)
+    p.Position = pos
+    p.Parent = workspace
+
+    local sg = Instance.new("SurfaceGui")
+    sg.Face = Enum.NormalId.Top
+    sg.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
+    sg.CanvasSize = Vector2.new(256, 256)
+    sg.LightInfluence = 0
+    sg.Parent = p
+
+    return p, sg
+end
+
+-- Estrella spiky con anillo al centro (igual que el video)
+local PUNTAS = {
+    {0, 1}, {40, 0.82}, {80, 1}, {120, 0.9}, {160, 1},
+    {200, 0.8}, {240, 1}, {280, 0.88}, {320, 0.95},
+}
+
+local function estrella(pos, tam)
+    local p, sg = plano(pos, tam)
+
+    local raiz = Instance.new("Frame")
+    raiz.Size = UDim2.fromScale(1, 1)
+    raiz.BackgroundTransparency = 1
+    raiz.Parent = sg
+
+    -- Anillo central
+    local anillo = Instance.new("Frame")
+    anillo.AnchorPoint = Vector2.new(0.5, 0.5)
+    anillo.Position = UDim2.fromScale(0.5, 0.5)
+    anillo.Size = UDim2.fromScale(0.4, 0.4)
+    anillo.BackgroundTransparency = 1
+    anillo.Parent = raiz
+    Instance.new("UICorner", anillo).CornerRadius = UDim.new(1, 0)
+    local borde = Instance.new("UIStroke", anillo)
+    borde.Thickness = 12
+    borde.Color = Color3.new(1, 1, 1)
+
+    -- Puntas afiladas (rebanadas que se van achicando)
+    local N, base = 7, 0.19
+    for _, d in ipairs(PUNTAS) do
+        local giro = Instance.new("Frame")
+        giro.AnchorPoint = Vector2.new(0.5, 0.5)
+        giro.Position = UDim2.fromScale(0.5, 0.5)
+        giro.Size = UDim2.fromScale(1, 1)
+        giro.BackgroundTransparency = 1
+        giro.Rotation = d[1]
+        giro.Parent = raiz
+
+        local punta = 0.5 * d[2]
+        local alto = (punta - base) / N
+        for i = 0, N - 1 do
+            local w = 0.1 * (1 - i / N) + 0.006
+            local s = Instance.new("Frame")
+            s.BorderSizePixel = 0
+            s.BackgroundColor3 = Color3.new(1, 1, 1)
+            s.Size = UDim2.fromScale(w, alto * 1.2)
+            s.Position = UDim2.fromScale(0.5 - w / 2, 0.5 - base - (i + 1) * alto)
+            s.Parent = giro
+        end
+    end
+
+    return p, raiz
+end
+
+local function desvanecer(raiz, dur)
+    for _, d in ipairs(raiz:GetDescendants()) do
+        if d:IsA("Frame") then
+            tw(d, dur, {BackgroundTransparency = 1})
+        elseif d:IsA("UIStroke") then
+            tw(d, dur, {Transparency = 1})
+        end
+    end
+end
+
+-- Aro gris grueso y facetado que se expande y desaparece
+local SEGMENTOS = 18
+
+local function crearAro(centro, rMin, rMax, alto)
+    local partes = {}
+    for i = 1, SEGMENTOS do
+        local p = Instance.new("Part")
+        p.Anchored, p.CanCollide, p.CanQuery, p.CanTouch = true, false, false, false
+        p.Color = Color3.fromRGB(150, 150, 150)
+        p.Material = Enum.Material.SmoothPlastic
+        p.Parent = workspace
+        partes[i] = p
+    end
+
+    local function poner(r)
+        local tangente = 2 * r * math.tan(math.pi / SEGMENTOS) * 1.08
+        for i, p in ipairs(partes) do
+            local a = (i / SEGMENTOS) * math.pi * 2
+            local pos = centro + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+            p.Size = Vector3.new(tangente, alto, 0.9)
+            p.CFrame = CFrame.lookAt(pos, centro)
+        end
+    end
+
+    poner(rMin)
+    local v = Instance.new("NumberValue")
+    v.Value = rMin
+    v.Parent = workspace
+    v.Changed:Connect(poner)
+    tw(v, 0.3, {Value = rMax})
+
+    for _, p in ipairs(partes) do
+        tw(p, 0.3, {Transparency = 1})
+        Debris:AddItem(p, 0.4)
+    end
+    Debris:AddItem(v, 0.4)
+end
+
+-- ------------------------------------------------------------
+-- Dash
+-- ------------------------------------------------------------
+
+local function dash()
+    if ocupado then return end
+
+    local char = jugador.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not root or not hum or hum.Health <= 0 then return end
+
+    -- Dirección horizontal
+    local look = root.CFrame.LookVector
+    local dir = Vector3.new(look.X, 0, look.Z)
+    if dir.Magnitude < 0.01 then return end
+    dir = dir.Unit
+
+    -- Distancia (frena antes de una pared)
+    local rp = RaycastParams.new()
+    rp.FilterDescendantsInstances = {char}
+    local hit = workspace:Raycast(root.Position, dir * DISTANCIA, rp)
+    local dist = hit and (hit.Distance - 3) or DISTANCIA
+    if dist < 12 then return end
+
+    ocupado = true
+
+    -- Guardar estado original
+    local camInicial = cam.CFrame
+    local rootInicial = root.Position
+    local fovInicial = cam.FieldOfView
+    local velOrig = hum.WalkSpeed
+    local jpOrig = hum.JumpPower
+    local jhOrig = hum.JumpHeight
+    local autoOrig = hum.AutoRotate
+
+    -- Articulación para inclinar el cuerpo en el dash
+    local junta = char:FindFirstChild("RootJoint", true)
+    local c0Orig = junta and junta.C0
+    local inclinar = (hum.RigType == Enum.HumanoidRigType.R6 and 1 or -1) * math.rad(65)
+
+    local limpiar = {}
+    local function T(o) limpiar[#limpiar + 1] = o return o end
+    local remolino
+
+    -- Cámara cenital que sigue al jugador
+    cam.CameraType = Enum.CameraType.Scriptable
+    local camConn = RunService.RenderStepped:Connect(function()
+        if not root.Parent then return end
+        local p = root.Position
+        local destino = CFrame.lookAt(
+            p + Vector3.new(0, ALTURA_CAMARA, 0) - dir * 8,
+            p + dir * 4
+        )
+        cam.CFrame = cam.CFrame:Lerp(destino, 0.15)
+    end)
+
+    local ok, err = pcall(function()
+        -- Congelar al jugador durante la secuencia
+        hum.WalkSpeed = 0
+        hum.JumpPower = 0
+        hum.JumpHeight = 0
+        hum.AutoRotate = false
+
+        local suelo = sueloY(root.Position, char)
+        local base = Vector3.new(rootInicial.X, suelo + 0.1, rootInicial.Z)
+
+        -- 1) La cámara baja
+        task.wait(0.5)
+
+        -- 2) Aros grises gruesos
+        crearAro(rootInicial + Vector3.new(0, 0.5, 0), 2.5, 4.5, 0.5)
+        crearAro(Vector3.new(rootInicial.X, suelo + 0.4, rootInicial.Z), 3, 5.5, 0.5)
+
+        -- 3) Estrella marcadora adelante (se atraviesa y se queda)
+        local mp = base + dir * (dist * 0.72)
+        local marca, raizM = estrella(Vector3.new(mp.X, sueloY(mp, char) + 0.15, mp.Z), 8)
+        T(marca)
+
+        -- 4) Remolino de cintas negras y blancas
+        local orbitas = {}
+        for i = 1, 6 do
+            local p = Instance.new("Part")
+            p.Anchored, p.CanCollide, p.CanQuery, p.CanTouch = true, false, false, false
+            p.Transparency = 1
+            p.Size = Vector3.one
+            p.Parent = workspace
+            local a0 = Instance.new("Attachment", p)
+            local a1 = Instance.new("Attachment", p)
+            a0.Position = Vector3.new(0, 0.5, 0)
+            a1.Position = Vector3.new(0, -0.5, 0)
+            local tr = Instance.new("Trail")
+            tr.Attachment0, tr.Attachment1 = a0, a1
+            tr.Lifetime = 0.5
+            tr.Color = ColorSequence.new(
+                i % 2 == 0 and Color3.fromRGB(235, 235, 235) or Color3.fromRGB(10, 10, 10)
+            )
+            tr.Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 0.2),
+                NumberSequenceKeypoint.new(1, 1)
+            })
+            tr.Parent = p
+            orbitas[i] = p
+            T(p)
+        end
+
+        local ts = os.clock()
+        remolino = RunService.Heartbeat:Connect(function()
+            if not root.Parent then return end
+            local t = os.clock() - ts
+            for i, p in ipairs(orbitas) do
+                local ang = t * 14 + i * (math.pi / 3)
+                local alt = 0.5 + 2.2 * math.sin(t * 6 + i)
+                p.Position = root.Position + Vector3.new(
+                    math.cos(ang) * 2.8, alt, math.sin(ang) * 2.8
+                )
+            end
+        end)
+        task.delay(0.55, function()
+            if remolino then remolino:Disconnect() end
+        end)
+
+        -- 5) Líneas doradas hacia atrás
+        local rayos = {}
+        for _, x in ipairs({-0.6, 0.6}) do
+            local a0 = T(Instance.new("Attachment", root))
+            local a1 = T(Instance.new("Attachment", root))
+            a0.Position = Vector3.new(x, 0.8, 0.5)
+            a1.Position = Vector3.new(x, 0.8, 9)
+            local b = T(Instance.new("Beam"))
+            b.Attachment0, b.Attachment1 = a0, a1
+            b.Width0, b.Width1 = 0.5, 0.05
+            b.Color = ColorSequence.new(Color3.fromRGB(255, 225, 90))
+            b.Transparency = NumberSequence.new(0, 1)
+            b.LightEmission = 1
+            b.FaceCamera = true
+            b.Parent = root
+            rayos[#rayos + 1] = b
+        end
+        task.delay(0.45, function()
+            for _, b in ipairs(rayos) do b:Destroy() end
+        end)
+
+        task.wait(0.2)
+
+        -- 6) DASH
+        -- Inclinar el cuerpo hacia adelante
+        if junta and c0Orig then
+            tw(junta, 0.15, {C0 = c0Orig * CFrame.Angles(inclinar, 0, 0)})
+        end
+
+        -- Estelas blancas anchas (planas, vistas desde arriba)
+        for _, alt in ipairs({0.6, -1}) do
+            local e0 = T(Instance.new("Attachment", root))
+            local e1 = T(Instance.new("Attachment", root))
+            e0.Position = Vector3.new(-1.6, alt, 0)
+            e1.Position = Vector3.new(1.6, alt, 0)
+            local estela = T(Instance.new("Trail"))
+            estela.Attachment0, estela.Attachment1 = e0, e1
+            estela.Lifetime = 0.45
+            estela.LightEmission = 1
+            estela.Color = ColorSequence.new(Color3.new(1, 1, 1))
+            estela.Transparency = NumberSequence.new(0.1, 1)
+            estela.Parent = root
+        end
+
+        -- Chispas continuas
+        local chispas = T(Instance.new("ParticleEmitter"))
+        chispas.Color = ColorSequence.new(Color3.new(1, 1, 1))
+        chispas.Size = NumberSequence.new(0.5, 0)
+        chispas.Lifetime = NumberRange.new(0.2, 0.4)
+        chispas.Rate = 120
+        chispas.Speed = NumberRange.new(4, 10)
+        chispas.SpreadAngle = Vector2.new(40, 40)
+        chispas.LightEmission = 1
+        chispas.Parent = root
+
+        -- Destello (se emite al atravesar la estrella)
+        local destello = T(Instance.new("ParticleEmitter"))
+        destello.Color = ColorSequence.new(Color3.new(1, 1, 1))
+        destello.Size = NumberSequence.new(3, 0)
+        destello.Lifetime = NumberRange.new(0.25, 0.4)
+        destello.Rate = 0
+        destello.Speed = NumberRange.new(12, 25)
+        destello.SpreadAngle = Vector2.new(360, 360)
+        destello.LightEmission = 1
+        destello.Parent = root
+
+        -- Impulso horizontal
+        local att = T(Instance.new("Attachment", root))
+        local lv = T(Instance.new("LinearVelocity"))
+        lv.Attachment0 = att
+        lv.RelativeTo = Enum.ActuatorRelativeTo.World
+        lv.MaxForce = 1e7
+        lv.VectorVelocity = dir * (dist / TIEMPO_DASH)
+        lv.Parent = root
+
+        task.delay(TIEMPO_DASH * 0.72, function()
+            if destello.Parent then destello:Emit(30) end
+        end)
+
+        task.wait(TIEMPO_DASH)
+
+        -- FIX: frenar en seco (evita morir por momentum)
+        lv:Destroy()
+        att:Destroy()
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+        chispas.Enabled = false
+
+        -- Volver a estar de pie
+        if junta and c0Orig then
+            tw(junta, 0.25, {C0 = c0Orig})
+        end
+
+        -- La estrella se queda en el piso un rato
+        task.wait(1.2)
+        desvanecer(raizM, 0.8)
+        task.wait(0.8)
+    end)
+
+    if not ok then
+        warn("[GIGANTIC FLICK] Error: " .. tostring(err))
+    end
+
+    -- Limpieza de efectos
+    camConn:Disconnect()
+    if remolino then remolino:Disconnect() end
+    for _, o in ipairs(limpiar) do
+        if o and o.Parent then o:Destroy() end
+    end
+    if junta and c0Orig and junta.Parent then junta.C0 = c0Orig end
+
+    -- FIX CÁMARA: volver suave a la posición original antes de soltarla
+    pcall(function()
+        if root.Parent and hum.Health > 0 then
+            local objetivo = camInicial + (root.Position - rootInicial)
+            local t = TweenService:Create(
+                cam,
+                TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut),
+                {CFrame = objetivo}
+            )
+            t:Play()
+            t.Completed:Wait()
+        end
+    end)
+
+    cam.CameraType = Enum.CameraType.Custom
+    local h = jugador.Character and jugador.Character:FindFirstChildOfClass("Humanoid")
+    if h then cam.CameraSubject = h end
+    cam.FieldOfView = fovInicial
+
+    -- Devolver control al jugador
+    if hum.Parent then
+        hum.WalkSpeed = velOrig
+        hum.JumpPower = jpOrig
+        hum.JumpHeight = jhOrig
+        hum.AutoRotate = autoOrig
+    end
+
+    task.wait(COOLDOWN)
+    ocupado = false
+end
+
+-- ------------------------------------------------------------
+-- Interfaz (botón movible)
+-- ------------------------------------------------------------
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "GiganticFlickUI"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Parent = playerGui
+
+local boton = Instance.new("TextButton")
+boton.Size = UDim2.new(0, 170, 0, 55)
+boton.Position = UDim2.new(0, 30, 1, -100)
+boton.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+boton.BorderSizePixel = 0
+boton.Text = "GIGANTIC FLICK"
+boton.TextColor3 = Color3.fromRGB(255, 220, 90)
+boton.Font = Enum.Font.Code
+boton.TextScaled = true
+boton.AutoButtonColor = false
+boton.Active = true
+boton.Parent = gui
+
+local borde = Instance.new("UIStroke", boton)
+borde.Color = Color3.fromRGB(255, 255, 255)
+borde.Thickness = 2
+
+-- Arrastre táctil y mouse
+local arrastrando, movido = false, false
+local posIni, entradaIni
+
+boton.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        arrastrando, movido = true, false
+        posIni, entradaIni = boton.Position, input.Position
+    end
+end)
+
+UIS.InputChanged:Connect(function(input)
+    if not arrastrando then return end
+    if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+        local d = input.Position - entradaIni
+        if math.abs(d.X) > 6 or math.abs(d.Y) > 6 then movido = true end
+        boton.Position = UDim2.new(
+            posIni.X.Scale, posIni.X.Offset + d.X,
+            posIni.Y.Scale, posIni.Y.Offset + d.Y
+        )
+    end
+end)
+
+UIS.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        arrastrando = false
+    end
+end)
+
+boton.Activated:Connect(function()
+    if movido then movido = false return end
+    dash()
+end)
+
+-- Tecla
+env.FlickConn = UIS.InputBegan:Connect(function(input, procesado)
+    if procesado then return end
+    if input.KeyCode == TECLA then dash() end
+end)
+
+print("[GIGANTIC FLICK v4] Cargado. E o botón = dash.")

@@ -1,0 +1,718 @@
+-- ============================================================
+-- PHOENIX PROTOCOL (Rick y Morty) - Delta Executor
+-- Hasta 4 cápsulas colocadas por ti: revives en orden (1, 2, 3, 4)
+-- P = colocar cápsula | O = abrir/cerrar la más cercana
+-- ============================================================
+
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+
+local jugador = Players.LocalPlayer
+local playerGui = jugador:WaitForChild("PlayerGui")
+
+-- Anti-duplicados
+local env = (getgenv and getgenv()) or _G
+if env.PHOENIX_LIMPIAR then
+	pcall(env.PHOENIX_LIMPIAR)
+end
+
+local conexiones = {}
+local function con(senal, fn)
+	local c = senal:Connect(fn)
+	table.insert(conexiones, c)
+	return c
+end
+
+-- ===== TAMAÑO (solo cambia RADIO, todo lo demás escala) =====
+local RADIO = 4
+-- ============================================================
+
+-- ===== COLOR DEL CRISTAL =====
+local COLOR_VIDRIO = Color3.fromRGB(90, 215, 150)
+local TRANSPARENCIA_VIDRIO = 0.55
+-- =============================
+
+local TAM_CIRCULO = 70
+local MAX_CAPSULAS = 4
+local ESPERA_ABRIR = 1.5
+
+local ALTO = RADIO * 3.68
+local ALT_FALDA = 1.0
+local ALT_MEDIA = 0.9
+local ALT_TOPE = 0.7
+local ALT_DISCO = 0.4
+local PISO = ALT_FALDA + ALT_MEDIA + ALT_TOPE + ALT_DISCO
+
+local SUBIDA_TAPA = RADIO * 1.9
+
+local TECLA_DESPLEGAR = Enum.KeyCode.P
+local TECLA_ABRIR = Enum.KeyCode.O
+local DISTANCIA_FRENTE = 14
+local SEPARACION_MIN = RADIO * 3.5   -- distancia mínima entre cápsulas
+
+local COLOR_FONDO = Color3.fromRGB(10, 10, 10)
+local COLOR_ROJO = Color3.fromRGB(200, 20, 30)
+local COLOR_VERDE = Color3.fromRGB(0, 200, 90)
+
+local COLOR_LUZ = Color3.fromRGB(90, 230, 110)
+
+local VERT = CFrame.Angles(0, 0, math.rad(90))
+
+local cola = {}               -- cápsulas colocadas, en orden (1 = la primera)
+local capsulaUso = nil        -- cápsula donde estás reviviendo
+local regenerando = false
+local autoActivo = true
+local murio = false
+local secuencia = 0
+
+local mensaje, mensajeHasta = nil, 0
+local function aviso(texto)
+	mensaje = texto
+	mensajeHasta = os.clock() + 1.5
+end
+
+-- Utilidades
+local function tween(obj, t, props)
+	local info = TweenInfo.new(t, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
+	local tw = TweenService:Create(obj, info, props)
+	tw:Play()
+	return tw
+end
+
+local function obtenerSueloY(pos, char)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = char and { char } or {}
+	params.IgnoreWater = true
+
+	local r = workspace:Raycast(pos + Vector3.new(0, 5, 0), Vector3.new(0, -500, 0), params)
+	if r then
+		return r.Position.Y
+	end
+	return pos.Y - 3
+end
+
+-- Construcción de la cápsula
+local function parte(modelo, forma, size, cf, color, material, transp, colisiona)
+	local p = Instance.new("Part")
+	p.Shape = forma
+	p.Size = size
+	p.CFrame = cf
+	p.Color = color
+	p.Material = material
+	p.Transparency = transp
+	p.Reflectance = 0
+	p.Anchored = true
+	p.CanCollide = colisiona or false
+	p.CanQuery = false
+	p.CastShadow = false
+	p.Parent = modelo
+	return p
+end
+
+local function crearCapsula(origen, colisionInicial)
+	local m = Instance.new("Model")
+	m.Name = "PhoenixCapsule"
+
+	local cil = Enum.PartType.Cylinder
+	local bola = Enum.PartType.Ball
+	local blq = Enum.PartType.Block
+	local SP = Enum.Material.SmoothPlastic
+	local R = RADIO
+	local D = R * 2
+
+	local function cilV(alto, diam, y, color, transp, colisiona)
+		return parte(m, cil, Vector3.new(alto, diam, diam),
+			origen * CFrame.new(0, y, 0) * VERT,
+			color, SP, transp, colisiona)
+	end
+
+	-- BASE ancha (3 capas, con colisión)
+	cilV(ALT_FALDA, D * 1.65, ALT_FALDA / 2,
+		Color3.fromRGB(32, 38, 40), 0, true)
+	cilV(ALT_MEDIA, D * 1.5, ALT_FALDA + ALT_MEDIA / 2,
+		Color3.fromRGB(52, 64, 62), 0, true)
+	cilV(ALT_TOPE, D * 1.35, ALT_FALDA + ALT_MEDIA + ALT_TOPE / 2,
+		Color3.fromRGB(64, 78, 74), 0, true)
+
+	-- Rayitas verdes del frente de la base
+	for _, ang in ipairs({ -49, -10, 17, 50 }) do
+		parte(m, blq, Vector3.new(0.15, 0.75, 0.1),
+			origen * CFrame.Angles(0, math.rad(ang), 0)
+				* CFrame.new(0, ALT_FALDA + ALT_MEDIA / 2, -(D * 0.75 + 0.02)),
+			Color3.fromRGB(120, 225, 150), SP, 0)
+	end
+
+	-- DISCO MENTA DEL PISO
+	cilV(ALT_DISCO, D * 0.9, PISO - ALT_DISCO / 2,
+		Color3.fromRGB(95, 210, 185), 0, true)
+
+	-- LUCES AMBAR (afuera del cristal, sobre la base)
+	local yTope = ALT_FALDA + ALT_MEDIA + ALT_TOPE
+	for _, lado in ipairs({ -1, 1 }) do
+		local a = math.rad(35) * lado
+		local r = R * 1.19
+		local p = Vector3.new(math.sin(a) * r, yTope + 0.55, -math.cos(a) * r)
+		local out = Vector3.new(p.X, 0, p.Z)
+		local cf = origen * CFrame.lookAt(p, p + out)
+
+		parte(m, blq, Vector3.new(1.3, 1.1, 1.0), cf,
+			Color3.fromRGB(45, 52, 50), SP, 0, true)
+
+		for _, dx in ipairs({ -0.25, 0.25 }) do
+			parte(m, blq, Vector3.new(0.3, 0.7, 0.1),
+				cf * CFrame.new(dx, 0, -0.52),
+				Color3.fromRGB(240, 180, 60), SP, 0)
+		end
+	end
+
+	-- PILARES (afuera del cristal, con colisión)
+	local pilarH = R * 2.95
+	local pw = R * 0.21
+	local luces = {}
+	local largoPilar = pilarH - pw / 2 + ALT_DISCO
+
+	for _, lado in ipairs({ -1, 1 }) do
+		local x = lado * (R + pw * 0.35)
+		local colorPilar = Color3.fromRGB(70, 160, 145)
+
+		parte(m, cil, Vector3.new(largoPilar, pw, pw),
+			origen * CFrame.new(x, yTope + largoPilar / 2, 0) * VERT,
+			colorPilar, SP, 0, true)
+
+		parte(m, bola, Vector3.new(pw, pw, pw),
+			origen * CFrame.new(x, PISO + pilarH - pw / 2, 0),
+			colorPilar, SP, 0, true)
+
+		for _, f in ipairs({ { 0.93, 0.88 }, { 0.53, 0.44 } }) do
+			parte(m, blq, Vector3.new(pw * 0.5, 1.1, 0.25),
+				origen * CFrame.new(x, PISO + pilarH * f[2], -pw / 2 + 0.05),
+				Color3.fromRGB(40, 90, 88), SP, 0)
+
+			local luz = parte(m, bola, Vector3.new(0.5, 0.5, 0.5),
+				origen * CFrame.new(x, PISO + pilarH * f[1], -pw / 2 + 0.05),
+				COLOR_LUZ, SP, 0)
+			table.insert(luces, luz)
+		end
+	end
+
+	-- CRISTAL VERDE TRANSPARENTE
+	local vidrio = {}
+
+	table.insert(vidrio, parte(m, cil, Vector3.new(ALTO, D, D),
+		origen * CFrame.new(0, PISO + ALTO / 2, 0) * VERT,
+		COLOR_VIDRIO, SP, TRANSPARENCIA_VIDRIO, colisionInicial))
+
+	table.insert(vidrio, parte(m, bola, Vector3.new(D, D, D),
+		origen * CFrame.new(0, PISO + ALTO, 0),
+		COLOR_VIDRIO, SP, TRANSPARENCIA_VIDRIO, colisionInicial))
+
+	table.insert(vidrio, cilV(0.2, D + 0.2, PISO + 0.1,
+		Color3.fromRGB(80, 200, 140), 0.35, false))
+
+	local cerrado = {}
+	for _, p in ipairs(vidrio) do
+		cerrado[p] = p.CFrame
+	end
+
+	local pl = Instance.new("PointLight")
+	pl.Color = Color3.fromRGB(110, 230, 160)
+	pl.Range = 12
+	pl.Brightness = 0.6
+	pl.Parent = vidrio[1]
+
+	m.Parent = workspace
+
+	return {
+		modelo = m,
+		vidrio = vidrio,
+		cerrado = cerrado,
+		luces = luces,
+		origen = origen,
+		abierta = false,
+		moviendo = false,
+		vigia = 0,
+	}
+end
+
+local function destruirCapsula(c)
+	if c and c.modelo and c.modelo.Parent then
+		c.modelo:Destroy()
+	end
+end
+
+-- Colisión del cristal (cuerpo + cúpula)
+local function fijarColision(c, valor)
+	if c.vidrio[1] then c.vidrio[1].CanCollide = valor end
+	if c.vidrio[2] then c.vidrio[2].CanCollide = valor end
+end
+
+-- Enciende la colisión del cristal solo cuando tú no estás adentro
+local function vigilarColision(c)
+	c.vigia += 1
+	local id = c.vigia
+
+	task.spawn(function()
+		while c.modelo.Parent and not c.abierta and not c.moviendo and c.vigia == id do
+			local char = jugador.Character
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			local dentro = false
+
+			if hrp then
+				local rel = c.origen:PointToObjectSpace(hrp.Position)
+				local horiz = Vector3.new(rel.X, 0, rel.Z).Magnitude
+				dentro = horiz < RADIO + 1.5
+					and rel.Y > -1
+					and rel.Y < PISO + ALTO + RADIO
+			end
+
+			if not dentro then
+				fijarColision(c, true)
+				return
+			end
+
+			task.wait(0.2)
+		end
+	end)
+end
+
+-- Animaciones
+local function parpadearLuces(c, veces)
+	task.spawn(function()
+		for _ = 1, veces do
+			if not c.modelo.Parent then return end
+			for _, l in ipairs(c.luces) do
+				l.Color = Color3.fromRGB(255, 255, 255)
+			end
+			task.wait(0.12)
+			if not c.modelo.Parent then return end
+			for _, l in ipairs(c.luces) do
+				l.Color = COLOR_LUZ
+			end
+			task.wait(0.12)
+		end
+	end)
+end
+
+local function abrirCapsula(c)
+	if not c or c.abierta or c.moviendo or not c.modelo.Parent then
+		return
+	end
+	c.abierta = true
+	c.moviendo = true
+	fijarColision(c, false)
+
+	for _, p in ipairs(c.vidrio) do
+		tween(p, 1.6, { CFrame = c.cerrado[p] + Vector3.new(0, SUBIDA_TAPA, 0) })
+	end
+
+	task.delay(1.7, function()
+		c.moviendo = false
+	end)
+end
+
+local function cerrarCapsula(c)
+	if not c or not c.abierta or c.moviendo or not c.modelo.Parent then
+		return
+	end
+	c.moviendo = true
+
+	for _, p in ipairs(c.vidrio) do
+		tween(p, 1.6, { CFrame = c.cerrado[p] })
+	end
+
+	task.delay(1.7, function()
+		c.abierta = false
+		c.moviendo = false
+		if c.modelo.Parent then
+			vigilarColision(c)
+		end
+	end)
+end
+
+-- Cápsula más cercana a ti (para el botón ABRIR)
+local function capsulaCercana()
+	local lista = {}
+	for _, c in ipairs(cola) do
+		if c.modelo.Parent then
+			table.insert(lista, c)
+		end
+	end
+	if capsulaUso and capsulaUso.modelo.Parent then
+		table.insert(lista, capsulaUso)
+	end
+	if #lista == 0 then
+		return nil
+	end
+
+	local char = jugador.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if not hrp then
+		return lista[#lista]
+	end
+
+	local mejor, mejorDist = nil, math.huge
+	for _, c in ipairs(lista) do
+		local d = (c.origen.Position - hrp.Position).Magnitude
+		if d < mejorDist then
+			mejor, mejorDist = c, d
+		end
+	end
+	return mejor
+end
+
+local function alternarCapsula()
+	local c = capsulaCercana()
+	if not c then
+		aviso("SIN\nCÁPSULA")
+		return
+	end
+
+	if c.abierta then
+		cerrarCapsula(c)
+	else
+		abrirCapsula(c)
+	end
+end
+
+-- Colocar una cápsula (hasta 4)
+local function desplegarManual()
+	if #cola >= MAX_CAPSULAS then
+		aviso("LLENO\n" .. MAX_CAPSULAS .. "/" .. MAX_CAPSULAS)
+		return
+	end
+
+	local char = jugador.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if not hrp then
+		return
+	end
+
+	local look = hrp.CFrame.LookVector
+	local plano = Vector3.new(look.X, 0, look.Z)
+	if plano.Magnitude < 0.01 then
+		plano = Vector3.new(0, 0, -1)
+	end
+	plano = plano.Unit
+
+	local pos = hrp.Position + plano * DISTANCIA_FRENTE
+
+	-- Evita encimar cápsulas
+	local todas = {}
+	for _, c in ipairs(cola) do table.insert(todas, c) end
+	if capsulaUso then table.insert(todas, capsulaUso) end
+
+	for _, c in ipairs(todas) do
+		if c.modelo.Parent then
+			local o = c.origen.Position
+			local d = Vector3.new(o.X - pos.X, 0, o.Z - pos.Z).Magnitude
+			if d < SEPARACION_MIN then
+				aviso("MUY\nCERCA")
+				return
+			end
+		end
+	end
+
+	local sueloY = obtenerSueloY(pos, char)
+	local base = Vector3.new(pos.X, sueloY, pos.Z)
+	local origen = CFrame.lookAt(base, base - plano)
+
+	table.insert(cola, crearCapsula(origen, true))
+	print("[PHOENIX] Cápsula " .. #cola .. "/" .. MAX_CAPSULAS .. " colocada")
+end
+
+-- Quitar la última cápsula colocada
+local function quitarUltima()
+	local c = table.remove(cola)
+	if not c then
+		aviso("SIN\nCÁPSULA")
+		return
+	end
+	destruirCapsula(c)
+end
+
+-- PROTOCOLO FÉNIX: revives en la cápsula 1, luego 2, 3, 4...
+local function regenerar(char)
+	if regenerando then
+		return
+	end
+
+	-- Toma la primera cápsula válida de la cola
+	local c
+	while #cola > 0 do
+		local candidata = table.remove(cola, 1)
+		if candidata.modelo and candidata.modelo.Parent then
+			c = candidata
+			break
+		end
+	end
+
+	if not c then
+		return -- sin cápsulas: reapareces normal
+	end
+
+	regenerando = true
+	secuencia += 1
+	local mi = secuencia
+	capsulaUso = c
+
+	local hrpRef
+
+	local ok, err = pcall(function()
+		local hrp = char:WaitForChild("HumanoidRootPart", 5)
+		local hum = char:WaitForChild("Humanoid", 5)
+		if not hrp or not hum then
+			return
+		end
+		hrpRef = hrp
+
+		-- Detiene el vigilante de colisión y deja el cristal sin colisión
+		c.vigia += 1
+		fijarColision(c, false)
+
+		local o = c.origen
+		hrp.Anchored = true
+		char:PivotTo(CFrame.new(o.Position.X, o.Position.Y + PISO + 3.3, o.Position.Z) * o.Rotation)
+
+		-- Luces parpadean y la cápsula se abre sola
+		parpadearLuces(c, 6)
+		task.wait(ESPERA_ABRIR)
+		if mi ~= secuencia then return end
+
+		abrirCapsula(c)
+		task.wait(1.7)
+		if mi ~= secuencia then return end
+
+		-- El clon sale
+		hrp.Anchored = false
+		task.wait(6)
+	end)
+
+	if hrpRef and hrpRef.Parent then
+		hrpRef.Anchored = false
+	end
+
+	if not ok then
+		warn("[PHOENIX] Error en regeneración: " .. tostring(err))
+	end
+
+	-- La cápsula usada desaparece
+	destruirCapsula(c)
+	capsulaUso = nil
+	regenerando = false
+	print("[PHOENIX] Regeneración terminada. Cápsulas restantes: " .. #cola)
+end
+
+-- Muerte / respawn
+local function vigilar(char)
+	local hum = char:WaitForChild("Humanoid", 10)
+	if not hum then
+		return
+	end
+
+	con(hum.Died, function()
+		murio = true
+	end)
+end
+
+con(jugador.CharacterAdded, function(char)
+	task.spawn(vigilar, char)
+
+	if murio then
+		murio = false
+		if autoActivo then
+			regenerar(char)
+		end
+	end
+end)
+
+if jugador.Character then
+	task.spawn(vigilar, jugador.Character)
+end
+
+-- Interfaz
+local anterior = playerGui:FindFirstChild("PhoenixProtocolUI")
+if anterior then
+	anterior:Destroy()
+end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "PhoenixProtocolUI"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Parent = playerGui
+
+local function crearBoton(texto, tam, pos, colorTexto, colorBorde, redondo)
+	local b = Instance.new("TextButton")
+	b.Size = tam
+	b.Position = pos
+	b.BackgroundColor3 = COLOR_FONDO
+	b.BorderSizePixel = 0
+	b.Text = texto
+	b.TextColor3 = colorTexto
+	b.Font = Enum.Font.Code
+	b.TextScaled = true
+	b.AutoButtonColor = false
+	b.Active = true
+	b.Parent = gui
+
+	if redondo then
+		local esquina = Instance.new("UICorner")
+		esquina.CornerRadius = UDim.new(1, 0)
+		esquina.Parent = b
+
+		local pad = Instance.new("UIPadding")
+		pad.PaddingLeft = UDim.new(0, 12)
+		pad.PaddingRight = UDim.new(0, 12)
+		pad.PaddingTop = UDim.new(0, 16)
+		pad.PaddingBottom = UDim.new(0, 16)
+		pad.Parent = b
+	end
+
+	local s = Instance.new("UIStroke")
+	s.Color = colorBorde
+	s.Thickness = 2
+	s.Parent = b
+
+	return b
+end
+
+local function hacerArrastrable(obj, alClick)
+	local arrastrando, movido = false, false
+	local inicio, posIni
+
+	con(obj.InputBegan, function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			arrastrando = true
+			movido = false
+			inicio = input.Position
+			posIni = obj.Position
+		end
+	end)
+
+	con(UIS.InputChanged, function(input)
+		if not arrastrando then
+			return
+		end
+
+		if input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch then
+			local d = input.Position - inicio
+
+			if d.Magnitude > 8 then
+				movido = true
+			end
+
+			if movido then
+				obj.Position = UDim2.new(
+					posIni.X.Scale, posIni.X.Offset + d.X,
+					posIni.Y.Scale, posIni.Y.Offset + d.Y
+				)
+			end
+		end
+	end)
+
+	con(UIS.InputEnded, function(input)
+		if not arrastrando then
+			return
+		end
+
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			arrastrando = false
+			if not movido then
+				alClick()
+			end
+		end
+	end)
+end
+
+-- Panel superior
+local panel = crearBoton(
+	"PHOENIX PROTOCOL: ON",
+	UDim2.new(0, 260, 0, 44),
+	UDim2.new(0.5, -130, 0, 20),
+	COLOR_VERDE, COLOR_ROJO
+)
+
+hacerArrastrable(panel, function()
+	autoActivo = not autoActivo
+	panel.Text = autoActivo and "PHOENIX PROTOCOL: ON" or "PHOENIX PROTOCOL: OFF"
+	panel.TextColor3 = autoActivo and COLOR_VERDE or COLOR_ROJO
+end)
+
+-- Botón circular: colocar cápsula (muestra cuántas llevas)
+local boton = crearBoton(
+	"CÁPSULA\n0/" .. MAX_CAPSULAS,
+	UDim2.new(0, TAM_CIRCULO, 0, TAM_CIRCULO),
+	UDim2.new(0, 30, 1, -100),
+	COLOR_ROJO, COLOR_VERDE, true
+)
+
+hacerArrastrable(boton, desplegarManual)
+
+-- Botón circular: abrir / cerrar la cápsula más cercana
+local botonAbrir = crearBoton(
+	"ABRIR",
+	UDim2.new(0, TAM_CIRCULO, 0, TAM_CIRCULO),
+	UDim2.new(0, 30 + TAM_CIRCULO + 12, 1, -100),
+	COLOR_VERDE, COLOR_ROJO, true
+)
+
+hacerArrastrable(botonAbrir, alternarCapsula)
+
+-- Botón circular: quitar la última cápsula colocada
+local botonQuitar = crearBoton(
+	"QUITAR",
+	UDim2.new(0, TAM_CIRCULO, 0, TAM_CIRCULO),
+	UDim2.new(0, 30 + (TAM_CIRCULO + 12) * 2, 1, -100),
+	COLOR_ROJO, COLOR_ROJO, true
+)
+
+hacerArrastrable(botonQuitar, quitarUltima)
+
+-- Actualiza los textos
+task.spawn(function()
+	while gui.Parent do
+		if mensaje and os.clock() < mensajeHasta then
+			boton.Text = mensaje
+		else
+			mensaje = nil
+			boton.Text = "CÁPSULA\n" .. #cola .. "/" .. MAX_CAPSULAS
+		end
+
+		local c = capsulaCercana()
+		botonAbrir.Text = (c and c.abierta) and "CERRAR" or "ABRIR"
+		task.wait(0.2)
+	end
+end)
+
+con(UIS.InputBegan, function(input, procesado)
+	if procesado then
+		return
+	end
+
+	if input.KeyCode == TECLA_DESPLEGAR then
+		desplegarManual()
+	elseif input.KeyCode == TECLA_ABRIR then
+		alternarCapsula()
+	end
+end)
+
+-- Limpieza al re-ejecutar
+env.PHOENIX_LIMPIAR = function()
+	secuencia += 1
+	for _, c in ipairs(conexiones) do
+		pcall(function() c:Disconnect() end)
+	end
+	for _, c in ipairs(cola) do
+		destruirCapsula(c)
+	end
+	cola = {}
+	destruirCapsula(capsulaUso)
+	if gui then gui:Destroy() end
+end
+
+print("[PHOENIX] Cargado. P = colocar (máx " .. MAX_CAPSULAS .. ") | O = abrir/cerrar | Muere para revivir")

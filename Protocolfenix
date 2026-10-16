@@ -185,13 +185,16 @@ local function crearCapsula(origen, colisionInicial)
 			origen * CFrame.new(x, PISO + pilarH - pw / 2, 0),
 			colorPilar, SP, 0, true)
 
+		-- Cara del pilar que mira al centro de la cápsula
+		local dentro = -lado * (pw / 2 - 0.05)
+
 		for _, f in ipairs({ { 0.93, 0.88 }, { 0.53, 0.44 } }) do
-			parte(m, blq, Vector3.new(pw * 0.5, 1.1, 0.25),
-				origen * CFrame.new(x, PISO + pilarH * f[2], -pw / 2 + 0.05),
+			parte(m, blq, Vector3.new(0.25, 1.1, pw * 0.5),
+				origen * CFrame.new(x + dentro, PISO + pilarH * f[2], 0),
 				Color3.fromRGB(40, 90, 88), SP, 0)
 
 			local luz = parte(m, bola, Vector3.new(0.5, 0.5, 0.5),
-				origen * CFrame.new(x, PISO + pilarH * f[1], -pw / 2 + 0.05),
+				origen * CFrame.new(x + dentro, PISO + pilarH * f[1], 0),
 				COLOR_LUZ, SP, 0)
 			table.insert(luces, luz)
 		end

@@ -33,8 +33,11 @@ end
 
 -- ===== CONFIG =====
 local CFG = {
-	DamageToSever = 15, -- daño de golpe para perder un miembro (solo con el panel en ON)
+	DamageToSever = 1, -- daño mínimo para perder un miembro (sube a 10-15 si quieres que solo pase con golpes fuertes)
 	TriggerOnDamage = true,
+	DamageCooldown = 0.8, -- segundos mínimos entre un miembro perdido y otro por daño
+	FallToSever = true, -- caídas fuertes también te cortan un miembro (aunque el juego no tenga daño de caída)
+	FallSpeedToSever = 60, -- velocidad de caída mínima (studs/s); ~60 = salto desde unos 25 studs
 
 	DeathLinger = 3.4, -- cuerpo tirado antes de regenerar
 	LimbLinger = 2.0, -- miembro cortado tirado antes de regenerar
@@ -1481,6 +1484,39 @@ local function runAction(name)
 	end
 end
 
+-- Pierde un miembro al azar por daño / caída: varía (no repite el mismo seguido) y salta los que ya están cortados
+local lastLimb = nil
+local lastLimbTime = 0
+local function severRandomLimb()
+	if State.busy or pendingDeath then
+		return
+	end
+	local now = os.clock()
+	if now - lastLimbTime < CFG.DamageCooldown then
+		return
+	end
+	local opts = {}
+	for _, g in ipairs(Rig.LIMBS) do
+		if not State.severed[g] and g ~= lastLimb then
+			table.insert(opts, g)
+		end
+	end
+	if #opts == 0 then
+		for _, g in ipairs(Rig.LIMBS) do
+			if not State.severed[g] then
+				table.insert(opts, g)
+			end
+		end
+	end
+	if #opts == 0 then
+		return
+	end
+	local g = opts[rng:NextInteger(1, #opts)]
+	lastLimb = g
+	lastLimbTime = now
+	severLimb(g)
+end
+
 --------------------------------------------------------------------------------
 -- VIGILAR PERSONAJE (muerte, daño)
 --------------------------------------------------------------------------------
@@ -1501,8 +1537,30 @@ local function vigilar(char)
 	con(hum.HealthChanged, function(health)
 		local damage = last - health
 		last = health
-		if autoActivo and CFG.TriggerOnDamage and health > 0 and damage >= CFG.DamageToSever and not State.busy then
-			severLimb(pick(Rig.LIMBS))
+		if autoActivo and CFG.TriggerOnDamage and health > 0 and damage >= CFG.DamageToSever then
+			severRandomLimb()
+		end
+	end)
+
+	-- caídas: mide la velocidad al aterrizar
+	local fallV = 0
+	con(RunService.Heartbeat, function()
+		if char.Parent and hum:GetState() == Enum.HumanoidStateType.Freefall then
+			local r = char:FindFirstChild("HumanoidRootPart")
+			if r then
+				fallV = math.min(fallV, r.AssemblyLinearVelocity.Y)
+			end
+		end
+	end)
+	con(hum.StateChanged, function(_, new)
+		if new == Enum.HumanoidStateType.Landed then
+			local v = -fallV
+			fallV = 0
+			if autoActivo and CFG.FallToSever and v >= CFG.FallSpeedToSever and hum.Health > 0 then
+				severRandomLimb()
+			end
+		elseif new ~= Enum.HumanoidStateType.Freefall and new ~= Enum.HumanoidStateType.Landed then
+			fallV = 0
 		end
 	end)
 end

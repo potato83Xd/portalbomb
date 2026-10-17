@@ -55,6 +55,8 @@ local CFG = {
 
 	Quality = 1, -- baja a 0.6 si tu celular va lento (menos listones)
 	CameraFx = true, -- zoom / temblor / destello al morir
+	KeepCamera = true, -- al revivir, la cámara empieza mirando el cuerpo desde donde la tenías al morir (solo un instante; luego la mueves tú)
+	MoveDuringRegen = true, -- true: puedes caminar y mover la cámara mientras te regeneras
 
 	Sound = true,
 	SfxVolume = 1,
@@ -251,6 +253,32 @@ end)
 
 local CamFx = {}
 local gradeToken = 0
+
+-- mantiene la cámara en un CFrame fijo un rato (para que al reaparecer no se voltee a un lado)
+local camHold = nil
+pcall(function()
+	RunService:BindToRenderStep("RickPrimeCamHold", Enum.RenderPriority.Camera.Value + 2, function()
+		local cam = workspace.CurrentCamera
+		if not camHold or not cam then
+			return
+		end
+		if os.clock() >= camHold.untilT then
+			camHold = nil
+			return
+		end
+		cam.CFrame = camHold.cf
+	end)
+end)
+function CamFx.hold(cf)
+	if CFG.KeepCamera and cf then
+		camHold = { cf = cf, untilT = os.clock() + 10 } -- tope de seguridad
+	end
+end
+function CamFx.release(delay)
+	if camHold then
+		camHold.untilT = os.clock() + (delay or 0.5)
+	end
+end
 local WHITE = Color3.new(1, 1, 1)
 
 local function shake(amp, duration)
@@ -1286,6 +1314,7 @@ local function onDeath(char, hum)
 		yaw = y
 	end
 	local deathCF = CFrame.new(root and root.Position or origin) * CFrame.Angles(0, yaw, 0)
+	local camSaved = workspace.CurrentCamera and workspace.CurrentCamera.CFrame
 
 	-- piezas ANTES de esconder el cuerpo (copian tamaño / posición / color)
 	local pieces = {}
@@ -1338,7 +1367,7 @@ local function onDeath(char, hum)
 		})
 	end
 
-	pendingDeath = { cf = deathCF, pieces = pieces, mass = mass, t0 = os.clock() }
+	pendingDeath = { cf = deathCF, camCF = camSaved, pieces = pieces, mass = mass, t0 = os.clock() }
 end
 
 local function regenBody(char, hum, data)
@@ -1367,15 +1396,27 @@ local function regenBody(char, hum, data)
 		local bottom = bbCF.Position.Y - bbSize.Y / 2
 		char:PivotTo(char:GetPivot() + Vector3.new(0, hit.Position.Y - bottom + 0.05, 0))
 	end
+	-- cámara: una orientación inicial rápida y se suelta enseguida (la controlas tú)
+	local cam = workspace.CurrentCamera
+	if cam then
+		pcall(function()
+			cam.CameraType = Enum.CameraType.Custom
+			cam.CameraSubject = hum
+		end)
+	end
+	CamFx.hold(data.camCF)
+	CamFx.release(0.15)
 
 	local saved = {
 		walk = hum.WalkSpeed, jumpPower = hum.JumpPower, jumpHeight = hum.JumpHeight,
 		autoRotate = hum.AutoRotate, display = hum.DisplayDistanceType,
 	}
-	hum.WalkSpeed = 0
-	hum.JumpPower = 0
-	hum.JumpHeight = 0
-	hum.AutoRotate = false
+	if not CFG.MoveDuringRegen then
+		hum.WalkSpeed = 0
+		hum.JumpPower = 0
+		hum.JumpHeight = 0
+		hum.AutoRotate = false
+	end
 
 	for _, pc in pairs(data.pieces) do
 		Piece.freeze(pc)
@@ -1392,6 +1433,9 @@ local function regenBody(char, hum, data)
 
 	if CFG.ClearPuddlesOnBodyRegen then
 		Blood.clear()
+	end
+	if CFG.MoveDuringRegen and char.Parent then
+		root.Anchored = false -- al empezar la regeneración ya puedes caminar y mover la cámara
 	end
 	-- empieza la regeneración: sonido de generación en bucle hasta que termine
 	local printLoop = Sfx.loop("print", nil, 1.2, 1)
@@ -1751,6 +1795,7 @@ env.RICKPRIME_LIMPIAR = function()
 	end
 	pcall(function()
 		RunService:UnbindFromRenderStep("RickPrimeShake")
+		RunService:UnbindFromRenderStep("RickPrimeCamHold")
 	end)
 	Ticker.list = {}
 	for ctrl in pairs(Sfx.loops) do

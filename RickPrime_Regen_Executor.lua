@@ -61,6 +61,7 @@ local CFG = {
 		"rbxassetid://104144683858662", -- Rick Prime: "well well well"
 	},
 	VoiceVolume = 1.4,
+	TearOnLimbCut = false, -- true: el sonido de desgarro/explosión también suena al cortarte un miembro (solo suena al morir si es false)
 	VoiceOnLimbRegen = false, -- true: también suena al regenerar un brazo / pierna
 	-- ¿Quieres tus propios sonidos? Pega aquí un id, ej: splat = "rbxassetid://123456789".
 	-- Ranuras: splat (sangre) | squelch (carne viscosa) | snap (hueso / pop) | thump (golpe grave) | whoosh (humo)
@@ -456,26 +457,16 @@ task.spawn(function()
 				break
 			end
 		end
+		if not Sfx.ready[slot] and #fallbacks == 0 then
+			local propio2 = CFG.CustomSounds[slot]
+			if propio2 and propio2 ~= "" then
+				Sfx.ready[slot] = propio2
+				table.insert(activos, slot .. "(sin verificar)")
+			end
+		end
 	end
 	table.sort(activos)
 	print("[RICKPRIME] Sonidos activos: " .. (#activos > 0 and table.concat(activos, ", ") or "ninguno"))
-
-	-- frases de voz: solo se guardan las que cargan
-	for _, id in ipairs(CFG.VoiceLines) do
-		local s = Instance.new("Sound")
-		s.SoundId = id
-		local ok = pcall(function()
-			ContentProvider:PreloadAsync({ s })
-		end)
-		local bueno = ok and s.TimeLength > 0
-		s:Destroy()
-		if bueno then
-			table.insert(Sfx.voices, id)
-		else
-			warn("[RICKPRIME] No cargó la frase: " .. id .. " (¿audio privado o id incorrecto?)")
-		end
-	end
-	print("[RICKPRIME] Frases listas: " .. #Sfx.voices .. "/" .. #CFG.VoiceLines)
 end)
 
 -- pos = nil -> suena en 2D (para lo grande, como la muerte)
@@ -513,29 +504,50 @@ function Sfx.play(slot, pos, volume, pitch)
 	s:Play()
 end
 
--- Frase de voz al terminar de revivir. Alterna: nunca la misma dos veces seguidas.
+-- Frase de voz al terminar de revivir. Rota en orden aleatorio: no repite hasta que salgan todas
+-- y nunca suenan dos a la vez.
+local voiceBag = {}
+local voiceBusy = false
 function Sfx.voice()
-	if not CFG.Sound then
+	if not CFG.Sound or #CFG.VoiceLines == 0 or voiceBusy then
 		return
 	end
-	local n = #Sfx.voices
-	if n == 0 then
-		return
-	end
-	local choice = rng:NextInteger(1, n)
-	if n > 1 then
-		while choice == Sfx.voiceLast do
-			choice = rng:NextInteger(1, n)
+	if #voiceBag == 0 then
+		for i = 1, #CFG.VoiceLines do
+			table.insert(voiceBag, i)
+		end
+		for i = #voiceBag, 2, -1 do
+			local j = rng:NextInteger(1, i)
+			voiceBag[i], voiceBag[j] = voiceBag[j], voiceBag[i]
+		end
+		if #voiceBag > 1 and voiceBag[#voiceBag] == Sfx.voiceLast then
+			voiceBag[1], voiceBag[#voiceBag] = voiceBag[#voiceBag], voiceBag[1]
 		end
 	end
-	Sfx.voiceLast = choice
+	local idx = table.remove(voiceBag)
+	Sfx.voiceLast = idx
 
-	local s = Instance.new("Sound")
-	s.SoundId = Sfx.voices[choice]
-	s.Volume = math.clamp(CFG.VoiceVolume * CFG.SfxVolume, 0, 10)
-	s.Parent = SoundService -- 2D: se oye clara sin importar dónde estés
-	Debris:AddItem(s, 15)
-	s:Play()
+	voiceBusy = true
+	task.spawn(function()
+		local s = Instance.new("Sound")
+		s.SoundId = CFG.VoiceLines[idx]
+		s.Volume = math.clamp(CFG.VoiceVolume * CFG.SfxVolume, 0, 10)
+		s.Parent = SoundService -- 2D: se oye clara sin importar dónde estés
+		local t = os.clock()
+		while not s.IsLoaded and os.clock() - t < 5 do
+			task.wait(0.1)
+		end
+		if not s.IsLoaded then
+			warn("[RICKPRIME] NO cargó el audio: " .. s.SoundId .. " (privado o sin permiso)")
+			s:Destroy()
+			voiceBusy = false
+			return
+		end
+		s:Play()
+		Debris:AddItem(s, math.max(s.TimeLength, 1) + 2)
+		task.wait(math.max(s.TimeLength, 0.5))
+		voiceBusy = false
+	end)
 end
 
 -- sonido en bucle (la "impresión" del cuerpo). Devuelve { Stop(fade) }.
@@ -1215,7 +1227,9 @@ local function severLimb(gname)
 	Fx.shards(center, rng:NextInteger(6, 10))
 	Blood.splatter(center, 12, 7, 1.6, 3.6)
 	CamFx.sever()
-	Sfx.play("tear", center, 1.6, 1)
+	if CFG.TearOnLimbCut then
+		Sfx.play("tear", center, 1.6, 1)
+	end
 	Sfx.play("splat", center, 1.3, 0.85)
 	Sfx.play("snap", center, 1.0, 0.8)
 	task.delay(0.12, function()

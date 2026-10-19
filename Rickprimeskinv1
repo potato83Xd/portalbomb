@@ -1,0 +1,210 @@
+--!nonstrict
+-- ============================================================
+-- OUTFIT LOCAL (LocalScript) - solo tú lo ves
+-- Automático: se pone al ejecutar y en cada respawn. Sin botones.
+-- Funciona en R6 y R15
+-- ============================================================
+local Players = game:GetService("Players")
+local InsertService = game:GetService("InsertService")
+
+local jugador = Players.LocalPlayer
+
+-- Anti-duplicados
+local env = (getgenv and getgenv()) or _G
+if env.OUTFIT_LIMPIAR then
+	pcall(env.OUTFIT_LIMPIAR)
+end
+
+-- ===== CONFIG =====
+local IDS = {
+	14985859247,        -- Grey Star Military Right Shoulder
+	10319492221,        -- Weird Rick BOTTOM
+	113332974175271,    -- Rick Prime
+}
+
+-- AJUSTE DEL HOMBRO EN R6 (en studs, relativo al brazo):
+-- X: + = hacia afuera | - = hacia adentro
+-- Y: + = más arriba   | - = más abajo
+-- Z: + = hacia atrás  | - = hacia adelante
+local AJUSTE_R6 = Vector3.new(-0.2, -0.1, 0.15)
+local GIRO_R6 = Vector3.new(0, 0, 0)
+-- ==================
+
+local conexiones = {}
+local function con(senal, fn)
+	local c = senal:Connect(fn)
+	table.insert(conexiones, c)
+	return c
+end
+
+local cache = {}
+local puestos = {}
+local token = 0
+
+local function cargar(id)
+	if cache[id] then
+		return cache[id]
+	end
+	local objs
+	local ok = pcall(function()
+		objs = game:GetObjects("rbxassetid://" .. id)
+	end)
+	if not ok or not objs or #objs == 0 then
+		ok = pcall(function()
+			objs = { InsertService:LoadAsset(id) }
+		end)
+	end
+	if not ok or not objs or #objs == 0 then
+		warn("[OUTFIT] No se pudo cargar el ID: " .. id .. " (si es un bundle, usa los IDs de cada pieza)")
+		return nil
+	end
+	cache[id] = objs
+	return objs
+end
+
+local function limpiarPuestos()
+	for _, o in ipairs(puestos) do
+		pcall(function() o:Destroy() end)
+	end
+	table.clear(puestos)
+end
+
+local function ponerAccesorio(char, hum, item)
+	local c = item:Clone()
+	local handle = c:FindFirstChild("Handle")
+	if not handle then
+		warn("[OUTFIT] Accesorio sin Handle: " .. c.Name)
+		return
+	end
+
+	handle.Anchored = false
+	handle.CanCollide = false
+	handle.Massless = true
+	handle.Transparency = 0
+
+	pcall(function() hum:AddAccessory(c) end)
+	if c.Parent ~= char then
+		c.Parent = char
+	end
+	table.insert(puestos, c)
+	task.wait(0.25)
+	if not char.Parent then return end
+
+	-- Quitar soldaduras automáticas para poner la nuestra bien colocada
+	for _, d in ipairs(handle:GetChildren()) do
+		if d:IsA("Weld") or d:IsA("WeldConstraint") or d:IsA("Motor6D") then
+			d:Destroy()
+		end
+	end
+
+	local att = handle:FindFirstChildOfClass("Attachment")
+	local nombre = (att and att.Name or c.Name):lower()
+	local esDerecho = nombre:find("right") ~= nil
+	local esIzquierdo = nombre:find("left") ~= nil
+	local esHombro = nombre:find("shoulder") ~= nil or c.Name:lower():find("shoulder") ~= nil
+
+	local destino
+	if esDerecho then
+		destino = char:FindFirstChild("Right Arm") or char:FindFirstChild("RightUpperArm")
+	elseif esIzquierdo then
+		destino = char:FindFirstChild("Left Arm") or char:FindFirstChild("LeftUpperArm")
+	end
+	if not destino or not esHombro then
+		destino = (not esHombro and destino) or nil
+		destino = destino or char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
+	end
+	if not destino then
+		warn("[OUTFIT] No se encontró dónde pegar: " .. c.Name)
+		return
+	end
+
+	local attHandle = att and att.CFrame or CFrame.new()
+	local puntoCuerpo
+
+	-- Si el cuerpo tiene el mismo attachment (R15), usarlo tal cual
+	local attCuerpo = att and destino:FindFirstChild(att.Name)
+	if attCuerpo and attCuerpo:IsA("Attachment") then
+		puntoCuerpo = attCuerpo.CFrame
+	else
+		-- R6: punto del hombro = parte de arriba del brazo, con ajuste
+		local lado = esIzquierdo and -1 or 1
+		local base = CFrame.new(0, destino.Size.Y / 2, 0)
+		if destino.Name == "Torso" or destino.Name == "UpperTorso" then
+			base = CFrame.new(lado * destino.Size.X / 2, destino.Size.Y / 2, 0)
+		end
+		local aj = CFrame.new(AJUSTE_R6.X * lado, AJUSTE_R6.Y, AJUSTE_R6.Z)
+			* CFrame.Angles(math.rad(GIRO_R6.X), math.rad(GIRO_R6.Y * lado), math.rad(GIRO_R6.Z * lado))
+		puntoCuerpo = base * aj
+	end
+
+	local w = Instance.new("Weld")
+	w.Name = "OutfitWeld"
+	w.Part0 = destino
+	w.Part1 = handle
+	w.C0 = puntoCuerpo
+	w.C1 = attHandle
+	w.Parent = handle
+end
+
+local function aplicar(char)
+	if not char then return end
+	token += 1
+	local miToken = token
+
+	local hum = char:WaitForChild("Humanoid", 10)
+	if not hum or miToken ~= token then return end
+
+	local t = 0
+	while not jugador:HasAppearanceLoaded() and t < 5 do
+		t += task.wait(0.1)
+	end
+	if miToken ~= token or not char.Parent then return end
+
+	limpiarPuestos()
+
+	for _, id in ipairs(IDS) do
+		local objs = cargar(id)
+		if objs then
+			for _, raiz in ipairs(objs) do
+				local lista = { raiz }
+				for _, d in ipairs(raiz:GetDescendants()) do
+					table.insert(lista, d)
+				end
+				for _, item in ipairs(lista) do
+					if miToken ~= token or not char.Parent then return end
+					if item:IsA("Accoutrement") then
+						ponerAccesorio(char, hum, item)
+					elseif item:IsA("Shirt") or item:IsA("Pants") or item:IsA("ShirtGraphic") then
+						-- quitar la ropa original del mismo tipo (se destruye)
+						for _, old in ipairs(char:GetChildren()) do
+							if old.ClassName == item.ClassName and not table.find(puestos, old) then
+								old:Destroy()
+							end
+						end
+						local c = item:Clone()
+						c.Parent = char
+						table.insert(puestos, c)
+					end
+				end
+			end
+		end
+	end
+end
+
+-- Cada vez que reapareces, se vuelve a poner solo
+con(jugador.CharacterAdded, function(char)
+	task.spawn(aplicar, char)
+end)
+if jugador.Character then
+	task.spawn(aplicar, jugador.Character)
+end
+
+env.OUTFIT_LIMPIAR = function()
+	token += 1
+	for _, c in ipairs(conexiones) do
+		pcall(function() c:Disconnect() end)
+	end
+	limpiarPuestos()
+end
+
+print("[OUTFIT] Cargado. Se aplica solo en cada respawn.")

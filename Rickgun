@@ -1,0 +1,640 @@
+--[[ PISTOLA LASER v7 — para ejecutor (Delta/Wave/Xeno)
+     - Fling: ahora se COMPRUEBA si realmente movió al objetivo (desplazamiento
+       y velocidad tras el intento). Si no funcionó, se avisa y no se finge éxito.
+     - Modo eliminar: solo borra Modelos con Humanoid vivo (ya no desaparecen
+       props del mapa ni partes sueltas). Antes de destruir, hace un efecto de
+       disolución (encogen y se desvanecen) para que no sea un "pop" instantáneo.
+     - Aviso en pantalla de qué pasó en cada disparo.
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local Debris = game:GetService("Debris")
+local TweenService = game:GetService("TweenService")
+local MarketplaceService = game:GetService("MarketplaceService")
+local LP = Players.LocalPlayer
+
+-- ===== CONFIGURACIÓN =====
+local ID_PISTOLA       = 99060206427611
+local ID_RESPALDO      = 212296936
+local SONIDO_FLING_ID  = "71286443122760"
+local ID_ELIMINAR      = "138687206526097"
+local VOLUMEN          = 1
+local RAYO_ID          = ""
+
+local GRIP_AJUSTE    = CFrame.new(-1.35, -0.15, -0.05) * CFrame.Angles(math.rad(0), math.rad(-88), math.rad(0))
+local BOCA_OFFSET    = Vector3.zero
+
+local GROSOR         = 1.0
+local COLOR_NORMAL   = Color3.fromRGB(255, 40, 40)
+local COLOR_ELIMINAR = Color3.fromRGB(255, 40, 40)
+
+local DISTANCIA        = 500
+local DURACION_FLING   = 0.5
+local VEL_ANGULAR      = 50000
+local VEL_LINEAL       = 4000
+local COOLDOWN         = 0.2
+local UMBRAL_DESPLAZ   = 8    -- studs: si el objetivo no se movió esto, el fling "no sirvió"
+local UMBRAL_VELOCIDAD = 25   -- studs/s: alternativa al desplazamiento (por si quedó frenado por algo)
+local DURACION_DISOLVER = 0.2 -- segundos que tarda el efecto de desvanecido antes de Destroy
+
+-- ===== ESTADO =====
+local modoEliminar = false
+local equipado = false
+local ocupado = false
+local mira = nil
+local ultimoToque = nil
+local refrescarPanel = nil
+local sonidoEliminar = nil
+local texturaEliminar = nil
+
+-- ===== CONEXIONES (se limpian al reejecutar) =====
+local env = (getgenv and getgenv()) or _G
+if env.LaserGunConn then pcall(function() env.LaserGunConn:Disconnect() end) end
+if env.LaserConns then
+	for _, c in ipairs(env.LaserConns) do pcall(function() c:Disconnect() end) end
+end
+env.LaserConns = {}
+local function conectar(senal, fn)
+	local c = senal:Connect(fn)
+	table.insert(env.LaserConns, c)
+	return c
+end
+
+-- ===== TIPO DE ASSET DE ID_ELIMINAR =====
+task.spawn(function()
+	local ok, info = pcall(function()
+		return MarketplaceService:GetProductInfo(tonumber(ID_ELIMINAR), Enum.InfoType.Asset)
+	end)
+	local tipo = ok and info and info.AssetTypeId or nil
+	if tipo == 1 then
+		texturaEliminar = ID_ELIMINAR
+	elseif tipo == nil or tipo == 3 then
+		sonidoEliminar = ID_ELIMINAR
+	else
+		warn("[LaserGun] ID_ELIMINAR es de otro tipo (AssetTypeId = " .. tostring(tipo) .. "); no se usa")
+	end
+end)
+
+-- ===== UTILIDADES =====
+local function colorActual()
+	return modoEliminar and COLOR_ELIMINAR or COLOR_NORMAL
+end
+
+local function actualizarMira()
+	if mira then mira.Color = colorActual() end
+end
+
+local function personajeJugador(inst)
+	local modelo = inst:FindFirstAncestorOfClass("Model")
+	if modelo and modelo:FindFirstChild("HumanoidRootPart") then
+		local jugador = Players:GetPlayerFromCharacter(modelo)
+		if jugador then return modelo, jugador end
+	end
+	return nil, nil
+end
+
+-- devuelve el Model si `inst` pertenece a un personaje con Humanoid vivo (jugador o NPC)
+local function personajeConHumanoid(inst)
+	local modelo = inst:FindFirstAncestorOfClass("Model")
+	if not modelo then return nil end
+	local hum = modelo:FindFirstChildOfClass("Humanoid")
+	if hum and hum.Health > 0 and modelo:FindFirstChild("HumanoidRootPart") then
+		return modelo, hum
+	end
+	return nil
+end
+
+-- ===== AVISO EN PANTALLA =====
+local labelAviso = nil
+local function aviso(texto, color)
+	if not labelAviso then return end
+	labelAviso.Text = texto
+	labelAviso.TextColor3 = color
+	labelAviso.TextTransparency = 0
+	labelAviso.BackgroundTransparency = 0.35
+	TweenService:Create(labelAviso, TweenInfo.new(1.1, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+		{TextTransparency = 1, BackgroundTransparency = 1}):Play()
+end
+
+-- ===== PUNTO APUNTADO =====
+conectar(UIS.InputBegan, function(input)
+	if input.UserInputType == Enum.UserInputType.Touch then
+		ultimoToque = Vector2.new(input.Position.X, input.Position.Y)
+	end
+end)
+
+local function rayoDeApuntado()
+	local camara = workspace.CurrentCamera
+	if UIS:GetLastInputType() == Enum.UserInputType.Touch and ultimoToque then
+		return camara:ScreenPointToRay(ultimoToque.X, ultimoToque.Y)
+	elseif UIS.MouseEnabled then
+		local p = UIS:GetMouseLocation()
+		return camara:ViewportPointToRay(p.X, p.Y)
+	end
+	local c = camara.ViewportSize / 2
+	return camara:ViewportPointToRay(c.X, c.Y)
+end
+
+-- ===== CARGA DEL MODELO POR ID =====
+local function cargarTool(id)
+	local ok, objs = pcall(function()
+		return game:GetObjects("rbxassetid://" .. tostring(id))
+	end)
+	if not ok or type(objs) ~= "table" or not objs[1] then
+		warn("[LaserGun] no se pudo cargar el ID " .. tostring(id))
+		return nil
+	end
+	local raiz = objs[1]
+
+	for _, d in ipairs(raiz:GetDescendants()) do
+		if d:IsA("LuaSourceContainer") then d:Destroy() end
+	end
+
+	local tool = raiz:IsA("Tool") and raiz or raiz:FindFirstChildWhichIsA("Tool", true)
+
+	if tool then
+		tool.Parent = nil
+	else
+		local partes = {}
+		if raiz:IsA("BasePart") then table.insert(partes, raiz) end
+		for _, d in ipairs(raiz:GetDescendants()) do
+			if d:IsA("BasePart") then table.insert(partes, d) end
+		end
+		if #partes == 0 then return nil end
+
+		local base = (raiz:IsA("Model") and raiz.PrimaryPart) or partes[1]
+
+		for _, d in ipairs(raiz:GetDescendants()) do
+			if d:IsA("JointInstance") or d:IsA("WeldConstraint") then d:Destroy() end
+		end
+		for _, p in ipairs(partes) do
+			if p ~= base and p.Name == "Handle" then p.Name = "HandleOriginal" end
+		end
+		base.Name = "Handle"
+
+		for _, p in ipairs(partes) do
+			if p ~= base then
+				local w = Instance.new("Weld")
+				w.Part0 = base
+				w.Part1 = p
+				w.C0 = base.CFrame:ToObjectSpace(p.CFrame)
+				w.Parent = p
+			end
+		end
+
+		tool = Instance.new("Tool")
+		for _, p in ipairs(partes) do p.Parent = tool end
+	end
+
+	local handle = tool:FindFirstChild("Handle")
+	if not handle or not handle:IsA("BasePart") then return nil end
+
+	tool.Name = "LaserGun"
+	tool.RequiresHandle = true
+	tool.CanBeDropped = false
+
+	for _, d in ipairs(tool:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.Anchored = false
+			d.CanCollide = false
+			d.CanQuery = false
+			if d ~= handle then d.Massless = true end
+		end
+	end
+	return tool
+end
+
+local plantilla = nil
+local plantillaLista = false
+
+local function obtenerPlantilla()
+	if not plantillaLista then
+		plantillaLista = true
+		plantilla = cargarTool(ID_PISTOLA) or cargarTool(ID_RESPALDO)
+		if not plantilla then
+			warn("[LaserGun] sin modelo importado: se usa la pistola básica")
+		end
+	end
+	return plantilla and plantilla:Clone() or nil
+end
+
+-- ===== RAYO =====
+local function crearRayo(desde, hasta, color, impacto)
+	local largo = (hasta - desde).Magnitude
+	if largo < 0.1 then return end
+	local cf = CFrame.lookAt(desde, hasta) * CFrame.new(0, 0, -largo / 2)
+	local info = TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+	local function capa(ancho, col, transp)
+		local p = Instance.new("Part")
+		p.Anchored = true
+		p.CanCollide = false
+		p.CanQuery = false
+		p.CanTouch = false
+		p.CastShadow = false
+		p.Material = Enum.Material.Neon
+		p.Color = col
+		p.Transparency = transp
+		p.Size = Vector3.new(ancho, ancho, largo)
+		p.CFrame = cf
+		p.Parent = workspace
+		TweenService:Create(p, info, {
+			Transparency = 1,
+			Size = Vector3.new(0.01, 0.01, largo),
+		}):Play()
+		Debris:AddItem(p, 0.45)
+	end
+
+	capa(GROSOR * 0.4, Color3.new(1, 1, 1), 0)
+	capa(GROSOR, color, 0.4)
+
+	if impacto then
+		local s = Instance.new("Part")
+		s.Shape = Enum.PartType.Ball
+		s.Anchored = true
+		s.CanCollide = false
+		s.CanQuery = false
+		s.CanTouch = false
+		s.CastShadow = false
+		s.Material = Enum.Material.Neon
+		s.Color = color
+		s.Transparency = 0.2
+		s.Size = Vector3.new(GROSOR * 1.5, GROSOR * 1.5, GROSOR * 1.5)
+		s.CFrame = CFrame.new(hasta)
+		s.Parent = workspace
+		TweenService:Create(s, TweenInfo.new(0.3), {
+			Size = Vector3.new(GROSOR * 6, GROSOR * 6, GROSOR * 6),
+			Transparency = 1,
+		}):Play()
+		Debris:AddItem(s, 0.4)
+	end
+end
+
+local function puntoAnclado(pos)
+	local p = Instance.new("Part")
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.Transparency = 1
+	p.Size = Vector3.new(0.1, 0.1, 0.1)
+	p.CFrame = CFrame.new(pos)
+	p.Parent = workspace
+	local a = Instance.new("Attachment")
+	a.Parent = p
+	return p, a
+end
+
+local function crearBeamTextura(desde, hasta, color, textura)
+	local partA, attA = puntoAnclado(desde)
+	local partB, attB = puntoAnclado(hasta)
+	local beam = Instance.new("Beam")
+	beam.Attachment0 = attA
+	beam.Attachment1 = attB
+	beam.Color = ColorSequence.new(color)
+	beam.Width0 = GROSOR
+	beam.Width1 = GROSOR * 0.4
+	beam.FaceCamera = true
+	beam.LightEmission = 1
+	beam.Texture = "rbxassetid://" .. textura
+	beam.Parent = partA
+	task.delay(0.2, function()
+		partA:Destroy()
+		partB:Destroy()
+	end)
+end
+
+local function disparoVisual(desde, hasta, color, impacto, texturaModo)
+	local tex = texturaModo or (RAYO_ID ~= "" and RAYO_ID or nil)
+	if tex then
+		crearBeamTextura(desde, hasta, color, tex)
+	else
+		crearRayo(desde, hasta, color, impacto)
+	end
+end
+
+-- ===== SONIDO =====
+local function sonar(handle, id)
+	if not id or id == "" then return end
+	local s = Instance.new("Sound")
+	s.SoundId = "rbxassetid://" .. id
+	s.Volume = VOLUMEN
+	s.Parent = handle
+	s:Play()
+	Debris:AddItem(s, 8)
+end
+
+-- ===== PUNTO DE SALIDA DEL RAYO =====
+local function puntoDeBoca(tool, handle)
+	local base = handle.Position
+	for _, d in ipairs(tool:GetDescendants()) do
+		if d:IsA("Attachment") then
+			local n = d.Name:lower()
+			if n:find("muzzle") or n:find("boca") or n:find("barrel") or n:find("fire") then
+				base = d.WorldPosition
+				break
+			end
+		end
+	end
+	return base + handle.CFrame:VectorToWorldSpace(BOCA_OFFSET)
+end
+
+-- ===== ELIMINAR (solo local, solo personajes vivos, con disolución) =====
+-- devuelve true si de verdad se eliminó un personaje
+local function intentarEliminar(inst)
+	local modelo, hum = personajeConHumanoid(inst)
+	if not modelo then
+		return false  -- no era un personaje: terreno, props del mapa, etc. No se toca nada.
+	end
+
+	local jugador = Players:GetPlayerFromCharacter(modelo)
+	local nombre = (jugador and jugador.Name) or modelo.Name
+
+	-- congelar y disolver antes de destruir, para que no sea un "pop" instantáneo
+	for _, p in ipairs(modelo:GetDescendants()) do
+		if p:IsA("BasePart") then
+			p.Anchored = true
+			p.CanCollide = false
+			TweenService:Create(p, TweenInfo.new(DURACION_DISOLVER), {
+				Transparency = 1,
+			}):Play()
+		elseif p:IsA("Decal") or p:IsA("Texture") then
+			TweenService:Create(p, TweenInfo.new(DURACION_DISOLVER), {Transparency = 1}):Play()
+		end
+	end
+
+	task.delay(DURACION_DISOLVER, function()
+		if modelo and modelo.Parent then
+			modelo:Destroy()
+		end
+	end)
+
+	return true, nombre
+end
+
+-- ===== FLING ESTILO INFINITE YIELD (con verificación de éxito) =====
+-- devuelve true si el objetivo realmente se desplazó o quedó con velocidad alta
+local function fling(modelo)
+	local miChar = LP.Character
+	local miHRP = miChar and miChar:FindFirstChild("HumanoidRootPart")
+	local hrpObj = modelo:FindFirstChild("HumanoidRootPart")
+	if not miHRP or not hrpObj then return false end
+
+	local cfOriginal = miHRP.CFrame
+	local posicionInicial = hrpObj.Position
+
+	local att = Instance.new("Attachment")
+	att.Parent = miHRP
+
+	local av = Instance.new("AngularVelocity")
+	av.Attachment0 = att
+	av.RelativeTo = Enum.ActuatorRelativeTo.World
+	av.MaxTorque = math.huge
+	av.AngularVelocity = Vector3.zero
+	av.Parent = miHRP
+
+	local fase = false
+	local conexion = RunService.Heartbeat:Connect(function()
+		if not (hrpObj.Parent and miHRP.Parent) then return end
+		fase = not fase
+		av.AngularVelocity = fase and Vector3.new(0, VEL_ANGULAR, 0) or Vector3.zero
+		miHRP.CFrame = hrpObj.CFrame
+		miHRP.AssemblyLinearVelocity = Vector3.new(VEL_LINEAL, VEL_LINEAL, VEL_LINEAL) * (fase and 1 or -1)
+	end)
+
+	task.wait(DURACION_FLING)
+
+	conexion:Disconnect()
+	if av.Parent then av:Destroy() end
+	if att.Parent then att:Destroy() end
+
+	if miHRP.Parent then
+		miHRP.AssemblyLinearVelocity = Vector3.zero
+		miHRP.AssemblyAngularVelocity = Vector3.zero
+		miHRP.CFrame = cfOriginal
+	end
+
+	-- ===== COMPROBACIÓN REAL =====
+	if not hrpObj.Parent then
+		-- el objetivo ya no existe (murió, se fue, etc.): no se puede afirmar éxito
+		return false
+	end
+
+	local desplazamiento = (hrpObj.Position - posicionInicial).Magnitude
+	local velocidad = hrpObj.AssemblyLinearVelocity.Magnitude
+
+	return (desplazamiento >= UMBRAL_DESPLAZ) or (velocidad >= UMBRAL_VELOCIDAD)
+end
+
+-- ===== TOOL =====
+local function crearTool()
+	local tool = obtenerPlantilla()
+	local handle
+
+	if tool then
+		handle = tool:FindFirstChild("Handle")
+		mira = nil
+		tool.Grip = GRIP_AJUSTE
+	else
+		tool = Instance.new("Tool")
+		tool.Name = "LaserGun"
+		tool.RequiresHandle = true
+		tool.CanBeDropped = false
+		tool.GripPos = Vector3.new(0, -0.2, -0.4)
+
+		handle = Instance.new("Part")
+		handle.Name = "Handle"
+		handle.Size = Vector3.new(0.4, 0.8, 1.4)
+		handle.Color = Color3.fromRGB(40, 40, 40)
+		handle.Material = Enum.Material.Metal
+		handle.Parent = tool
+
+		mira = Instance.new("Part")
+		mira.Name = "Mira"
+		mira.Size = Vector3.new(0.1, 0.1, 0.1)
+		mira.Material = Enum.Material.Neon
+		mira.CanCollide = false
+		mira.CanQuery = false
+		mira.CanTouch = false
+		mira.Massless = true
+		mira.Parent = handle
+
+		local weld = Instance.new("Weld")
+		weld.Part0 = handle
+		weld.Part1 = mira
+		weld.C0 = CFrame.new(0, 0.15, -0.7)
+		weld.Parent = handle
+	end
+
+	actualizarMira()
+
+	conectar(tool.Equipped, function() equipado = true end)
+	conectar(tool.Unequipped, function() equipado = false end)
+
+	local function disparar()
+		if ocupado then return end
+		ocupado = true
+
+		local ok, err = pcall(function()
+			local apuntado = rayoDeApuntado()
+			local origen = apuntado.Origin
+			local direccion = apuntado.Direction.Unit * DISTANCIA
+
+			local params = RaycastParams.new()
+			params.FilterType = Enum.RaycastFilterType.Exclude
+			params.FilterDescendantsInstances = LP.Character and {LP.Character} or {}
+
+			local resultado = workspace:Raycast(origen, direccion, params)
+			local puntoFinal = resultado and resultado.Position or (origen + direccion)
+
+			local eliminando = modoEliminar
+			disparoVisual(
+				puntoDeBoca(tool, handle), puntoFinal, colorActual(),
+				resultado ~= nil, eliminando and texturaEliminar or nil
+			)
+			sonar(handle, eliminando and sonidoEliminar or SONIDO_FLING_ID)
+
+			if not resultado then
+				aviso("Sin blanco", Color3.fromRGB(180, 180, 180))
+				return
+			end
+
+			if eliminando then
+				local exito, nombre = intentarEliminar(resultado.Instance)
+				if exito then
+					aviso("Eliminado: " .. nombre, Color3.fromRGB(255, 90, 90))
+				else
+					aviso("Eso no es un personaje", Color3.fromRGB(180, 180, 180))
+				end
+			else
+				local modelo, jugador = personajeJugador(resultado.Instance)
+				if jugador and jugador ~= LP then
+					local funciono = fling(modelo)
+					if funciono then
+						aviso("Fling: SÍ", Color3.fromRGB(90, 255, 120))
+					else
+						aviso("Fling: NO (rechazado por el servidor)", Color3.fromRGB(255, 170, 60))
+					end
+				else
+					aviso("No hay jugador ahí", Color3.fromRGB(180, 180, 180))
+				end
+			end
+		end)
+		if not ok then warn("[LaserGun] " .. tostring(err)) end
+
+		task.wait(COOLDOWN)
+		ocupado = false
+	end
+
+	conectar(tool.Activated, disparar)
+	return tool
+end
+
+-- ===== ENTREGA (también tras respawn) =====
+local function entregar()
+	local backpack = LP:WaitForChild("Backpack")
+	local viejo = backpack:FindFirstChild("LaserGun")
+	if viejo then viejo:Destroy() end
+	crearTool().Parent = backpack
+end
+
+entregar()
+conectar(LP.CharacterAdded, function()
+	equipado = false
+	task.wait(1)
+	entregar()
+end)
+
+-- ===== TOGGLE MODO ELIMINAR =====
+local function alternarModo()
+	modoEliminar = not modoEliminar
+	actualizarMira()
+	if refrescarPanel then refrescarPanel() end
+end
+
+conectar(UIS.InputBegan, function(input, gp)
+	if gp or not equipado then return end
+	if input.KeyCode == Enum.KeyCode.E then alternarModo() end
+end)
+
+-- ===== PANEL (modo eliminar + aviso) =====
+local function crear(clase, props, padre)
+	local o = Instance.new(clase)
+	for k, v in pairs(props) do o[k] = v end
+	o.Parent = padre
+	return o
+end
+
+local destino
+do
+	local ok, r = pcall(function() return gethui and gethui() end)
+	destino = (ok and r) or LP:WaitForChild("PlayerGui")
+end
+local guiViejo = destino:FindFirstChild("LaserPanel")
+if guiViejo then guiViejo:Destroy() end
+
+local COL_FONDO = Color3.fromRGB(24, 24, 30)
+local COL_FILA  = Color3.fromRGB(40, 40, 50)
+local COL_TEXTO = Color3.fromRGB(235, 235, 240)
+
+local gui = crear("ScreenGui", {
+	Name = "LaserPanel", ResetOnSpawn = false, DisplayOrder = 999,
+}, destino)
+
+local panel = crear("Frame", {
+	Size = UDim2.new(0, 230, 0, 112),
+	Position = UDim2.new(0, 10, 0.18, 0),
+	BackgroundColor3 = COL_FONDO, BorderSizePixel = 0, Active = true,
+}, gui)
+crear("UICorner", {CornerRadius = UDim.new(0, 8)}, panel)
+
+local titulo = crear("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1, Active = true,
+	Text = "  PISTOLA (arrastra aquí)", TextColor3 = COL_TEXTO, TextSize = 13,
+	Font = Enum.Font.GothamBold, TextXAlignment = Enum.TextXAlignment.Left,
+}, panel)
+
+local botonModo = crear("TextButton", {
+	Position = UDim2.new(0, 8, 0, 32), Size = UDim2.new(1, -16, 0, 38),
+	BackgroundColor3 = COL_FILA, TextColor3 = COL_TEXTO, TextSize = 14,
+	Font = Enum.Font.GothamBold, BorderSizePixel = 0,
+}, panel)
+crear("UICorner", {CornerRadius = UDim.new(0, 6)}, botonModo)
+
+labelAviso = crear("TextLabel", {
+	Position = UDim2.new(0, 8, 0, 76), Size = UDim2.new(1, -16, 0, 28),
+	BackgroundColor3 = COL_FILA, BackgroundTransparency = 1,
+	TextColor3 = Color3.fromRGB(180, 180, 180), TextTransparency = 1,
+	Text = "", TextSize = 12, Font = Enum.Font.GothamMedium,
+}, panel)
+crear("UICorner", {CornerRadius = UDim.new(0, 6)}, labelAviso)
+
+refrescarPanel = function()
+	botonModo.Text = modoEliminar and "Modo: ELIMINAR" or "Modo: NORMAL (fling)"
+	botonModo.BackgroundColor3 = modoEliminar and Color3.fromRGB(170, 30, 30) or COL_FILA
+end
+refrescarPanel()
+conectar(botonModo.Activated, alternarModo)
+
+local arrastrando, inicioPos, panelInicio = false, nil, nil
+conectar(titulo.InputBegan, function(i)
+	if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+		arrastrando = true
+		inicioPos = i.Position
+		panelInicio = panel.Position
+	end
+end)
+conectar(UIS.InputEnded, function(i)
+	if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+		arrastrando = false
+	end
+end)
+conectar(UIS.InputChanged, function(i)
+	if arrastrando and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+		local d = i.Position - inicioPos
+		panel.Position = UDim2.new(panelInicio.X.Scale, panelInicio.X.Offset + d.X,
+			panelInicio.Y.Scale, panelInicio.Y.Offset + d.Y)
+	end
+end)

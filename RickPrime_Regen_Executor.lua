@@ -6,6 +6,8 @@
 -- Botones circulares arrastrables (celular) | panel ON/OFF arriba
 -- Todo es LOCAL: lo ves tú. Al morir reapareces EN EL MISMO LUGAR.
 -- NO salen tentáculos del suelo: los listones nacen del cuerpo.
+-- NUEVO: al regenerarte el cuerpo queda TUMBADO en el piso y se PARA como en los videos
+--        (sin temblor, sin convulsión, sin mover la cámara, siempre apoyado en el suelo).
 -- ============================================================
 
 local Players = game:GetService("Players")
@@ -54,9 +56,18 @@ local CFG = {
 	ClearPuddlesOnBodyRegen = true,
 
 	Quality = 1, -- baja a 0.6 si tu celular va lento (menos listones)
-	CameraFx = true, -- zoom / temblor / destello al morir
+	CameraFx = true, -- zoom / temblor / destello al morir (ponlo en false si no quieres NADA de cámara)
 	KeepCamera = true, -- al revivir, la cámara empieza mirando el cuerpo desde donde la tenías al morir (solo un instante; luego la mueves tú)
-	MoveDuringRegen = true, -- true: puedes caminar y mover la cámara mientras te regeneras
+	MoveDuringRegen = true, -- true: puedes caminar y mover la cámara mientras te regeneras (con GetUp = true te quedas quieto hasta pararte)
+
+	-- ===== LEVANTARSE (copiado de los videos: frente / lado / arriba) =====
+	GetUp = true, -- true: el cuerpo regenerado empieza TUMBADO en el piso y se para; false: aparece de pie como antes
+	GetUpDelay = 0.5, -- segundos tumbado antes de empezar a pararse
+	GetUpRise = 1.3, -- segundos que tarda en pararse (sube girando sobre los pies)
+	GetUpSettle = 0.6, -- segundos finales: los brazos bajan y se acomoda
+	GetUpLean = 7, -- grados que se inclina hacia adelante justo al terminar de pararse (0 = recto)
+	GetUpArms = 1, -- cuánto abre los brazos al pararse (0 = no los mueve, 1 = como el video, 1.5 = más)
+	GetUpFixedCamera = true, -- true: la cámara se queda quieta mientras te paras (no baja con el cuerpo)
 
 	Sound = true,
 	SfxVolume = 1,
@@ -1123,6 +1134,262 @@ function Proxies.ghosts(parts)
 end
 
 --------------------------------------------------------------------------------
+-- LEVANTARSE (copiado de los videos): tumbado en el piso -> se para
+--   * Todo es matemática suave (sin azar, sin vibración): NADA de temblor ni convulsión.
+--   * No mueve la cámara (con GetUpFixedCamera = true hasta se queda quieta).
+--   * El cuerpo gira como un bloque alrededor de los pies y SIEMPRE queda apoyado en el piso:
+--     la altura sale de la caja real del personaje (con accesorios), así que ni se hunde
+--     ni sale del suelo.
+--   Del video de FRENTE: brazos abiertos que bajan al final.
+--   Del video de LADO: gira sobre los pies, se pasa un poquito hacia adelante y se endereza.
+--   Del video de ARRIBA: empieza tumbado en el piso, boca arriba, y se levanta desde ahí.
+--------------------------------------------------------------------------------
+local GetUp = { active = nil }
+
+local function smooth01(x)
+	x = math.clamp(x, 0, 1)
+	return x * x * (3 - 2 * x)
+end
+
+local function bump(x) -- 0 en los extremos, 1 en el medio, sin saltos
+	local s = math.sin(math.pi * math.clamp(x, 0, 1))
+	return s * s
+end
+
+local function mix(a, b, t)
+	return a + (b - a) * t
+end
+
+local function findJoint(char, partName)
+	for _, d in ipairs(char:GetDescendants()) do
+		if d:IsA("Motor6D") and d.Part1 and d.Part1.Name == partName then
+			return d
+		end
+	end
+	return nil
+end
+
+-- gira lo que cuelga de la articulación, alrededor de la articulación (ejes del Part0)
+local function offsetJoint(entry, rot)
+	local pivot = entry.base.Position
+	entry.j.C0 = CFrame.new(pivot) * rot * CFrame.new(-pivot) * entry.base
+end
+
+function GetUp.stop()
+	local s = GetUp.active
+	if not s then
+		return
+	end
+	GetUp.active = nil
+	pcall(function()
+		RunService:UnbindFromRenderStep("RickPrimeGetUp")
+	end)
+	pcall(s.restore)
+end
+
+-- Devuelve { finish() } o nil. Llamar con el cuerpo de pie, escondido y ya apoyado en el piso.
+function GetUp.start(char, hum, root)
+	GetUp.stop()
+	if not CFG.GetUp or cleaned or not char.Parent then
+		return nil
+	end
+	if not char.PrimaryPart then
+		char.PrimaryPart = root
+	end
+	root.Anchored = true
+
+	-- caja real del personaje (con accesorios), de pie y apoyada en el piso
+	local bbCF, bbSize = char:GetBoundingBox()
+	local hy, hz = bbSize.Y / 2, bbSize.Z / 2
+	local groundY = bbCF.Position.Y - hy
+	local footX, footZ = bbCF.Position.X, bbCF.Position.Z
+	local _, yaw = root.CFrame:ToOrientation()
+	local rootRel = bbCF:ToObjectSpace(root.CFrame)
+	local standPos = root.Position
+
+	-- cuerpo rígido que gira sobre los pies (a > 0: tumbado boca arriba, a < 0: inclinado hacia adelante).
+	-- La altura se calcula para que el punto más bajo de la caja toque SIEMPRE el piso.
+	local function boxCF(a)
+		local ca, sa = math.cos(a), math.sin(a)
+		local cy = hy * ca + hz * math.abs(sa)
+		local cz = hy * sa + ((a >= 0) and 1 or -1) * hz * (1 - ca)
+		return CFrame.new(footX, groundY + cy, footZ)
+			* CFrame.Angles(0, yaw, 0)
+			* CFrame.new(0, 0, cz)
+			* CFrame.Angles(a, 0, 0)
+	end
+
+	-- ===== tiempos y curvas =====
+	local D = math.max(CFG.GetUpDelay, 0)
+	local R = math.max(CFG.GetUpRise, 0.1)
+	local S = math.max(CFG.GetUpSettle, 0.05)
+	local total = D + R + S
+	local A0 = math.rad(90)
+	local lean = math.rad(math.max(CFG.GetUpLean, 0))
+	local armK = CFG.GetUpArms
+
+	-- curva de subida: arranca y termina suave (velocidad 0) con una pasadita hacia adelante antes de enderezarse
+	local function fAt(p, k)
+		local q = math.clamp((p - 0.45) / 0.55, 0, 1)
+		return smooth01(p) + k * bump(q)
+	end
+	local want = 1 + lean / A0
+	local lo, hi = 0, 2
+	for _ = 1, 22 do
+		local mid = (lo + hi) / 2
+		local peak = 0
+		for i = 0, 40 do
+			peak = math.max(peak, fAt(i / 40, mid))
+		end
+		if peak < want then
+			lo = mid
+		else
+			hi = mid
+		end
+	end
+	local K = (lo + hi) / 2
+
+	local function pitchAt(t)
+		if t <= D then
+			return A0
+		end
+		local p = math.clamp((t - D) / R, 0, 1)
+		return A0 * (1 - fAt(p, K))
+	end
+
+	-- brazos (abrir hacia los lados + un poco hacia adelante, luego bajar) y cabeza (agacha la barbilla al subir)
+	local function limbsAt(t)
+		if t <= D then
+			return math.rad(22) * armK, math.rad(22) * armK, 0, 0
+		end
+		local p = math.clamp((t - D) / R, 0, 1)
+		local s = math.clamp((t - D - R) / S, 0, 1)
+		local open = smooth01(p / 0.8)
+		local k = (1 - smooth01(s)) * armK
+		local rAbd = mix(math.rad(22), math.rad(78), open) * k -- el derecho sube un poco más (como en el video)
+		local lAbd = mix(math.rad(22), math.rad(58), open) * k
+		local flex = math.rad(26) * open * k
+		local nod = -math.rad(10) * bump(p)
+		return rAbd, lAbd, flex, nod
+	end
+
+	-- ===== articulaciones (R6 y R15) =====
+	local r15 = hum.RigType == Enum.HumanoidRigType.R15
+	local joints = {}
+	local function add(key, partName)
+		local j = findJoint(char, partName)
+		if j then
+			joints[key] = { j = j, base = j.C0 }
+		end
+	end
+	add("R", r15 and "RightUpperArm" or "Right Arm")
+	add("L", r15 and "LeftUpperArm" or "Left Arm")
+	add("N", "Head")
+
+	-- sin animaciones del juego peleando contra la pose (eso es lo que causa los temblores)
+	local animate = char:FindFirstChild("Animate")
+	local animateWasOn = false
+	if animate and animate:IsA("LocalScript") and not animate.Disabled then
+		animateWasOn = true
+		animate.Disabled = true
+	end
+	local animator = hum:FindFirstChildOfClass("Animator")
+	local function stopTracks()
+		if animator then
+			for _, tr in ipairs(animator:GetPlayingAnimationTracks()) do
+				tr:Stop(0)
+			end
+		end
+	end
+	stopTracks()
+	local keepStopping = not animateWasOn
+
+	-- cámara quieta (el punto que sigue es el mismo que seguiría con el personaje de pie)
+	local cam = workspace.CurrentCamera
+	local camAnchor = nil
+	if CFG.GetUpFixedCamera and cam then
+		local off = 1.5
+		if r15 and hum.AutomaticScalingEnabled then
+			off += (root.Size.Y - 2) / 2
+		end
+		camAnchor = newFxPart(Vector3.one * 0.2, Color3.new(1, 1, 1))
+		camAnchor.Transparency = 1
+		camAnchor.Position = standPos + Vector3.new(0, off + hum.CameraOffset.Y, 0)
+		camAnchor.Parent = fx
+		pcall(function()
+			cam.CameraSubject = camAnchor
+		end)
+	end
+
+	local state = {}
+	GetUp.active = state
+	local t0 = os.clock()
+
+	local function pose(t)
+		root.CFrame = boxCF(pitchAt(t)) * rootRel
+		local rAbd, lAbd, flex, nod = limbsAt(t)
+		if joints.R then
+			offsetJoint(joints.R, CFrame.Angles(flex, 0, rAbd))
+		end
+		if joints.L then
+			offsetJoint(joints.L, CFrame.Angles(flex, 0, -lAbd))
+		end
+		if joints.N then
+			offsetJoint(joints.N, CFrame.Angles(nod, 0, 0))
+		end
+	end
+
+	function state.restore()
+		for _, e in pairs(joints) do
+			if e.j.Parent then
+				e.j.C0 = e.base
+			end
+		end
+		if animateWasOn and animate and animate.Parent then
+			animate.Disabled = false
+		end
+		if camAnchor then
+			if cam and cam.CameraSubject == camAnchor and hum.Parent then
+				pcall(function()
+					cam.CameraSubject = hum
+				end)
+			end
+			camAnchor:Destroy()
+		end
+	end
+
+	pose(0)
+	RunService:BindToRenderStep("RickPrimeGetUp", Enum.RenderPriority.Input.Value + 2, function()
+		if GetUp.active ~= state or cleaned or not root.Parent then
+			GetUp.stop()
+			return
+		end
+		local ok, err = pcall(pose, os.clock() - t0)
+		if not ok then
+			warn("[RICKPRIME] GetUp: " .. tostring(err))
+			GetUp.stop()
+			return
+		end
+		if keepStopping then
+			stopTracks()
+		end
+	end)
+
+	local handle = {}
+	-- deja que la animación termine (si falta) y devuelve todo a la normalidad
+	function handle.finish()
+		while GetUp.active == state and (os.clock() - t0) < total and not cleaned do
+			task.wait()
+		end
+		if GetUp.active == state then
+			pcall(pose, total)
+			GetUp.stop()
+		end
+	end
+	return handle
+end
+
+--------------------------------------------------------------------------------
 -- REGENERAR UN GRUPO (miembro / torso / cabeza)
 --------------------------------------------------------------------------------
 local function tendrilProfile(gname, parts)
@@ -1300,6 +1567,7 @@ local STEPS = {
 }
 
 local function onDeath(char, hum)
+	GetUp.stop() -- si moriste mientras te parabas, se suelta todo
 	if not autoActivo or pendingDeath then
 		return
 	end
@@ -1434,9 +1702,22 @@ local function regenBody(char, hum, data)
 	if CFG.ClearPuddlesOnBodyRegen then
 		Blood.clear()
 	end
-	if CFG.MoveDuringRegen and char.Parent then
-		root.Anchored = false -- al empezar la regeneración ya puedes caminar y mover la cámara
+	-- con GetUp el cuerpo sigue anclado mientras se para; sin GetUp ya puedes caminar y mover la cámara
+	if CFG.MoveDuringRegen and not CFG.GetUp and char.Parent then
+		root.Anchored = false
 	end
+
+	-- empieza a pararse (el cuerpo real sigue escondido; los bloques amarillos lo siguen)
+	local getUp = nil
+	if CFG.GetUp and char.Parent then
+		local okGU, res = pcall(GetUp.start, char, hum, root)
+		if okGU then
+			getUp = res
+		else
+			warn("[RICKPRIME] GetUp: " .. tostring(res))
+		end
+	end
+
 	-- empieza la regeneración: sonido de generación en bucle hasta que termine
 	local printLoop = Sfx.loop("print", nil, 1.2, 1)
 	if not Sfx.ready.print then
@@ -1469,6 +1750,11 @@ local function regenBody(char, hum, data)
 		task.wait()
 	end
 	printLoop.Stop(0.3)
+
+	-- termina de pararse (si falta) y devuelve articulaciones / animaciones / cámara a la normalidad
+	if getUp then
+		getUp.finish()
+	end
 
 	-- red de seguridad: todo visible y sin restos
 	for _, parts in pairs(groups) do
@@ -1610,6 +1896,7 @@ local function vigilar(char)
 end
 
 con(jugador.CharacterAdded, function(char)
+	GetUp.stop()
 	State.busy = false
 	task.spawn(vigilar, char)
 
@@ -1788,6 +2075,7 @@ end)
 --------------------------------------------------------------------------------
 env.RICKPRIME_LIMPIAR = function()
 	cleaned = true
+	pcall(GetUp.stop)
 	for _, c in ipairs(conexiones) do
 		pcall(function()
 			c:Disconnect()
@@ -1809,4 +2097,4 @@ env.RICKPRIME_LIMPIAR = function()
 	fx:Destroy()
 end
 
-print("[RICKPRIME] Cargado. Botones BRAZO / PIERNA / TODO / MORIR | Teclas Z X C V | Daño >= " .. CFG.DamageToSever .. " corta un miembro")
+print("[RICKPRIME] Cargado. Botones BRAZO / PIERNA / TODO / MORIR | Teclas Z X C V | Daño >= " .. CFG.DamageToSever .. " corta un miembro | Se para al regenerarse: " .. tostring(CFG.GetUp))

@@ -2,12 +2,12 @@
 -- ============================================================
 -- RICK PRIME REGENERATION (Delta Executor / LocalScript)
 -- Los 3 videos en un solo script: miembro (brazo / pierna) y muerte completa
--- Z = brazo | X = pierna | C = todos los miembros | V = morir
+-- Z = brazo | X = pierna | C = todos los miembros | V = morir | B = probar solo la animacion de levantarse
 -- Botones circulares arrastrables (celular) | panel ON/OFF arriba
 -- Todo es LOCAL: lo ves tú. Al morir reapareces EN EL MISMO LUGAR.
 -- NO salen tentáculos del suelo: los listones nacen del cuerpo.
 -- v2: al regenerarte el cuerpo queda TUMBADO en el piso y se PARA como en los 3 videos
---     (piernas primero, torso pivotando desde la cadera, brazos que se abren y bajan).
+--     (piernas paradas desde el inicio; el torso arranca doblado hacia atras con la cabeza abajo y da un latigazo hacia arriba desde la cadera; brazos colgando).
 --     Sin temblor, sin convulsión, sin mover la cámara, siempre apoyado en el suelo,
 --     y PUEDES MOVERTE mientras se reproduce (el root no se ancla; velocidad reducida hasta pararte).
 -- ============================================================
@@ -65,11 +65,11 @@ local CFG = {
 
 	-- ===== LEVANTARSE (copiado de los videos: frente / lado / arriba) =====
 	GetUp = true, -- true: el cuerpo regenerado empieza TUMBADO en el piso y se para; false: aparece de pie como antes
-	GetUpDelay = 0.5, -- segundos tumbado antes de empezar a pararse
-	GetUpRise = 1.3, -- segundos que tarda en pararse (piernas primero, torso despues)
-	GetUpSettle = 0.6, -- segundos finales: los brazos bajan y se acomoda
-	GetUpLean = 12, -- grados que se inclina hacia adelante (cabeza agachada) justo al terminar de pararse (0 = recto)
-	GetUpArms = 1, -- cuanto abre los brazos al pararse (0 = no los mueve, 1 = como el video, 1.5 = mas)
+	GetUpDelay = 0.05, -- segundos que espera (ya formado) antes de empezar el latigazo hacia arriba
+	GetUpRise = 1.15, -- segundos que dura la subida (en el video dura ~0.9 s; mas alto = mas lento y suave)
+	GetUpSettle = 0.4, -- segundos finales: se acomoda y vuelve la animacion normal
+	GetUpLean = 2, -- grados que se inclina hacia adelante (cabeza agachada) justo al terminar de pararse (0 = recto)
+	GetUpArms = 0, -- 0 = los brazos cuelgan quietos (como en el video, NO se levantan); 1 = balanceo suave hacia atras al final
 	GetUpMoveSpeed = 0.45, -- velocidad al caminar mientras te paras (0 = quieto, 1 = normal); sube sola a la normal al terminar
 
 	Sound = true,
@@ -1141,19 +1141,20 @@ function Proxies.ghosts(parts)
 end
 
 --------------------------------------------------------------------------------
--- LEVANTARSE (copiado de los 3 videos: frente / lado / arriba)
---   Del video de ARRIBA: el cuerpo nace TUMBADO en el piso, boca arriba, con los pies donde estaba parado.
---   Del video de LADO:   las PIERNAS se paran primero; el torso se levanta DESPUES, pivotando desde la
---                        cadera, con la cabeza agachada; se pasa un poco hacia adelante y se endereza.
---   Del video de FRENTE: los brazos se abren hacia los lados al pararse y luego bajan despacio.
+-- LEVANTARSE (medido cuadro por cuadro en los 3 videos: frente / lado / arriba)
+--   Las PIERNAS estan paradas desde el principio y NO se mueven. Solo el TORSO con la cabeza pivota en las
+--   CADERAS (video de lado, angulos medidos cada 0.1 s):
+--     * arranca doblado hacia ATRAS con la cabeza abajo, casi tocando el piso (~140 grados desde vertical)
+--     * sube hasta quedar horizontal (~90) y de ahi da el "latigazo" hacia arriba (~0.3 s)
+--     * llega recto con una leve inclinacion hacia adelante (~2 grados, casi recto) y se asienta en 0
+--   Los BRAZOS no se levantan: cuelgan a los costados (y al terminar la animacion normal del juego los mueve).
 --
 --   Como funciona (para que puedas moverte y no haya temblores):
 --   * El HumanoidRootPart NO se ancla ni se mueve a mano: sigue de pie y TU controlas el movimiento.
---     Solo se cambia el C0 de las articulaciones (Motor6D), asi que el cuerpo se ve tumbado/parandose
---     mientras caminas. La camara sigue al root (de pie), por eso NO se mueve ni baja.
---   * Todo es matematica suave (sin azar, sin vibracion): cero temblores, cero sacudidas.
---   * Pegado al piso: cada cuadro se calcula el punto mas bajo del cuerpo y se sube lo justo para que
---     NUNCA se hunda ni flote (el cuerpo jamas sale del suelo).
+--     Solo se cambia el C0 de las articulaciones (Motor6D). La camara sigue al root (de pie): NO se mueve.
+--   * Todo es matematica suave (curva cubica por los angulos medidos, sin azar): cero temblores.
+--   * Pegado al piso: cada cuadro se calcula el punto mas bajo del torso y se sube lo justo para que
+--     NUNCA se hunda; las piernas siempre estan en el suelo.
 --   * Mientras te paras: sin saltar y con velocidad reducida; la velocidad vuelve sola a la normal.
 --------------------------------------------------------------------------------
 local GetUp = { active = nil }
@@ -1192,6 +1193,52 @@ local function rotAbout(pivot, a)
 	return CFrame.new(pivot) * CFrame.Angles(a, 0, 0) * CFrame.new(-pivot)
 end
 
+-- curva cubica suave que pasa exactamente por los fotogramas medidos (sin rebotes extra)
+local function makeCurve(xs, ys)
+	local n = #xs
+	local d, m = {}, {}
+	for i = 1, n - 1 do
+		d[i] = (ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i])
+	end
+	m[1], m[n] = 0, 0 -- arranca y termina en reposo
+	for i = 2, n - 1 do
+		if d[i - 1] * d[i] <= 0 then
+			m[i] = 0
+		else
+			m[i] = (d[i - 1] + d[i]) / 2
+		end
+	end
+	for i = 1, n - 1 do
+		if d[i] == 0 then
+			m[i], m[i + 1] = 0, 0
+		else
+			local a, b = m[i] / d[i], m[i + 1] / d[i]
+			local q = a * a + b * b
+			if q > 9 then
+				local tau = 3 / math.sqrt(q)
+				m[i], m[i + 1] = tau * a * d[i], tau * b * d[i]
+			end
+		end
+	end
+	return function(x)
+		if x <= xs[1] then
+			return ys[1]
+		end
+		if x >= xs[n] then
+			return ys[n]
+		end
+		local i = 1
+		while x > xs[i + 1] do
+			i += 1
+		end
+		local h = xs[i + 1] - xs[i]
+		local t = (x - xs[i]) / h
+		local t2, t3 = t * t, t * t * t
+		return (2 * t3 - 3 * t2 + 1) * ys[i] + (t3 - 2 * t2 + t) * h * m[i]
+			+ (-2 * t3 + 3 * t2) * ys[i + 1] + (t3 - t2) * h * m[i + 1]
+	end
+end
+
 function GetUp.stop()
 	local s = GetUp.active
 	if not s then
@@ -1204,7 +1251,7 @@ function GetUp.stop()
 	pcall(s.restore)
 end
 
--- Devuelve { finish() } o nil. Llamar con el cuerpo de pie, escondido y ya apoyado en el piso.
+-- Devuelve { release(), finish() } o nil. Llamar con el cuerpo de pie, escondido y ya apoyado en el piso.
 function GetUp.start(char, hum, root)
 	GetUp.stop()
 	if not CFG.GetUp or cleaned or not char.Parent then
@@ -1217,7 +1264,8 @@ function GetUp.start(char, hum, root)
 	local r15 = hum.RigType == Enum.HumanoidRigType.R15
 	local rootJoint = findJoint(char, r15 and "LowerTorso" or "Torso")
 	if not rootJoint or rootJoint.Part0 ~= root then
-		return nil -- rig raro: no se anima (el cuerpo solo aparece de pie)
+		warn("[RICKPRIME] GetUp: no encontré la articulación raíz del cuerpo; aparece de pie sin animación")
+		return nil
 	end
 	local torso = rootJoint.Part1
 
@@ -1235,7 +1283,7 @@ function GetUp.start(char, hum, root)
 	local torsoRel = rootJoint.C0 * rootJoint.C1:Inverse() -- root -> torso (de pie)
 	local rootBase = rootJoint.C0
 
-	-- caderas: ahi se dobla el torso respecto a las piernas
+	-- caderas: ahi pivota el torso; las piernas se quedan paradas
 	local hips = {}
 	local function addHip(partName)
 		local j = findJoint(char, partName)
@@ -1276,21 +1324,27 @@ function GetUp.start(char, hum, root)
 	local lowerPts = boxPoints(feetY, H.Y)
 	local upperPts = boxPoints(H.Y, topY)
 
-	-- aL = angulo de las piernas, aT = angulo del torso (> 0 tumbado boca arriba, < 0 inclinado hacia adelante)
-	-- Devuelve: CFrame del cuerpo entero (root joint) y CFrame de doblez en la cadera
-	local function bodyOffsets(aL, aT)
-		local offL = rotAbout(F, aL)
-		local bend = rotAbout(H, aT - aL)
-		local offT = offL * bend
-		local minY = math.huge
-		for _, p in ipairs(lowerPts) do
-			minY = math.min(minY, offL:PointToWorldSpace(p).Y)
+	-- aT = angulo del torso en radianes: 0 = recto, 90 = horizontal hacia atras, > 90 = cabeza mas abajo que la cadera,
+	-- < 0 = inclinado hacia adelante. Devuelve el CFrame (en el espacio del root) que mueve el torso entero.
+	-- El pivote es la cadera (las piernas no se mueven); si la cabeza llegaria bajo el piso, se sube lo justo.
+	local function torsoOffset(aT)
+		local off
+		if hinge then
+			off = rotAbout(H, aT)
+		else
+			off = rotAbout(F, aT) -- rig raro: todo el cuerpo gira junto sobre los pies
 		end
-		for _, p in ipairs(upperPts) do
-			minY = math.min(minY, offT:PointToWorldSpace(p).Y)
+		local minY = math.huge
+		for _, q in ipairs(upperPts) do
+			minY = math.min(minY, off:PointToWorldSpace(q).Y)
+		end
+		if not hinge then
+			for _, q in ipairs(lowerPts) do
+				minY = math.min(minY, off:PointToWorldSpace(q).Y)
+			end
 		end
 		local lift = math.max(0, feetY - minY) -- sube lo justo para no hundirse; jamas mas
-		return CFrame.new(0, lift, 0) * offT, bend
+		return CFrame.new(0, lift, 0) * off
 	end
 
 	-- ===== tiempos y curvas =====
@@ -1298,59 +1352,23 @@ function GetUp.start(char, hum, root)
 	local R = math.max(CFG.GetUpRise, 0.1)
 	local S = math.max(CFG.GetUpSettle, 0.05)
 	local total = D + R + S
-	local A0 = math.rad(90)
-	local lean = math.rad(math.max(CFG.GetUpLean, 0))
+	local lean = math.max(CFG.GetUpLean, 0)
 	local armK = CFG.GetUpArms
 	local speedK = math.clamp(CFG.GetUpMoveSpeed or 0.45, 0, 1)
 
-	-- curva del torso: arranca y termina suave (velocidad 0) con una pasadita hacia adelante antes de enderezarse
-	local function fAt(p, k)
-		local q = math.clamp((p - 0.45) / 0.55, 0, 1)
-		return smooth01(p) + k * bump(q)
-	end
-	local want = 1 + lean / A0
-	local lo, hi = 0, 2
-	for _ = 1, 22 do
-		local mid = (lo + hi) / 2
-		local peak = 0
-		for i = 0, 40 do
-			peak = math.max(peak, fAt(i / 40, mid))
-		end
-		if peak < want then
-			lo = mid
-		else
-			hi = mid
-		end
-	end
-	local K = (lo + hi) / 2
+	-- angulo del torso medido en el video de lado: tiempo (s del video) -> grados
+	local VID = 0.9 -- duracion de la subida en el video
+	local angleAt = makeCurve(
+		{ 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.85, 0.9 },
+		{ 140, 125, 115, 93, 30, 8, -lean, -lean * 0.5, 0, 0 }
+	)
 
-	local function anglesAt(t)
-		if t <= D then
-			return A0, A0
-		end
-		local p = math.clamp((t - D) / R, 0, 1)
-		local aT = A0 * (1 - fAt(p, K)) -- el torso se levanta despacio, con cabeza agachada
-		local aL = A0 * (1 - smooth01(p / 0.62)) -- las piernas se paran primero (video de lado)
-		if not hinge then
-			aL = aT
-		end
-		return aL, aT
-	end
-
-	-- brazos (abrir hacia los lados + un poco hacia adelante, luego bajar) y cabeza (agacha la barbilla al subir)
-	local function limbsAt(t)
-		if t <= D then
-			return math.rad(22) * armK, math.rad(22) * armK, 0, 0
-		end
-		local p = math.clamp((t - D) / R, 0, 1)
-		local s = math.clamp((t - D - R) / S, 0, 1)
-		local open = smooth01(p / 0.8)
-		local k = (1 - smooth01(s)) * armK
-		local rAbd = mix(math.rad(22), math.rad(78), open) * k -- el derecho sube un poco mas (como en el video)
-		local lAbd = mix(math.rad(22), math.rad(58), open) * k
-		local flex = math.rad(26) * open * k
-		local nod = -math.rad(10) * bump(p)
-		return rAbd, lAbd, flex, nod
+	-- brazos: cuelgan a los costados (NO se levantan). Solo, si GetUpArms > 0, un balanceo suave hacia atras al
+	-- final (como el del video). Cabeza: se queda un poco atras mientras el torso da el latigazo.
+	local function limbsAt(p)
+		local flex = math.rad(-14) * armK * bump((p - 0.6) / 0.4)
+		local nod = math.rad(8) * bump((p - 0.3) / 0.5) -- negativo = barbilla abajo; aqui un poquito atras
+		return flex, -nod
 	end
 
 	-- ===== articulaciones de brazos y cabeza (R6 y R15) =====
@@ -1417,24 +1435,32 @@ function GetUp.start(char, hum, root)
 	local state = {}
 	GetUp.active = state
 	local t0 = os.clock()
+	-- el cuerpo se queda TUMBADO (boca arriba) hasta que el torso termina de formarse; ahi empieza a pararse
+	local releasedAt = nil
 
 	local function pose(t)
-		-- cuerpo entero (articulacion raiz) + doblez de cadera (las piernas se quedan paradas)
-		local offT, bend = bodyOffsets(anglesAt(t))
+		t = releasedAt and (t - releasedAt) or 0
+		local p = (t <= D) and 0 or math.clamp((t - D) / R, 0, 1) -- 0..1 de la subida
+		local aT = math.rad(angleAt(p * VID))
+
+		-- torso (articulacion raiz) + caderas contrarias (las piernas se quedan paradas en el piso)
+		local offT = torsoOffset(aT)
 		rootJoint.C0 = offT * rootBase
 		if hinge then
-			local fix = torsoRel:Inverse() * bend:Inverse() * torsoRel
+			local fix = torsoRel:Inverse() * offT:Inverse() * torsoRel
 			for _, e in ipairs(hips) do
 				e.j.C0 = fix * e.base
 			end
 		end
 
-		local rAbd, lAbd, flex, nod = limbsAt(t)
-		if joints.R then
-			offsetJoint(joints.R, CFrame.Angles(flex, 0, rAbd))
-		end
-		if joints.L then
-			offsetJoint(joints.L, CFrame.Angles(flex, 0, -lAbd))
+		local flex, nod = limbsAt(p)
+		if armK > 0 then
+			if joints.R then
+				offsetJoint(joints.R, CFrame.Angles(flex, 0, 0))
+			end
+			if joints.L then
+				offsetJoint(joints.L, CFrame.Angles(flex, 0, 0))
+			end
 		end
 		if joints.N then
 			offsetJoint(joints.N, CFrame.Angles(nod, 0, 0))
@@ -1445,7 +1471,7 @@ function GetUp.start(char, hum, root)
 			local s = smooth01((t - D - R) / S)
 			hum.WalkSpeed = baseWalk * mix(speedK, 1, s)
 		end
-		-- al terminar de subir, vuelve la animacion normal (caminar / idle) mientras bajan los brazos
+		-- al terminar de subir, vuelve la animacion normal (caminar / idle)
 		if t >= D + R and keepStopping then
 			backToAnimate()
 		end
@@ -1504,13 +1530,23 @@ function GetUp.start(char, hum, root)
 	end)
 
 	local handle = {}
+	function handle.release()
+		if not releasedAt then
+			releasedAt = os.clock() - t0
+		end
+	end
 	-- deja que la animacion termine (si falta) y devuelve todo a la normalidad
 	function handle.finish()
-		while GetUp.active == state and (os.clock() - t0) < total and not cleaned do
+		-- si nadie lo solto (algo fallo), se suelta solo a los 6 s
+		while GetUp.active == state and not releasedAt and (os.clock() - t0) < 6 and not cleaned do
+			task.wait()
+		end
+		handle.release()
+		while GetUp.active == state and (os.clock() - t0 - releasedAt) < total and not cleaned do
 			task.wait()
 		end
 		if GetUp.active == state then
-			pcall(pose, total)
+			pcall(pose, releasedAt + total)
 			GetUp.stop()
 		end
 	end
@@ -1594,6 +1630,9 @@ local function regenGroup(ctx, groups, gname, piece, mode)
 	Sfx.play("snap", Rig.center(parts), 0.9, 1.3) -- el hueso "encaja"
 	local proxies = scope:Add(Proxies.run(list, fly, form))
 	task.wait(form)
+	if isTorso and ctx.onTorsoFormed then
+		ctx.onTorsoFormed() -- el torso ya esta en su sitio: ahora si empieza a pararse
+	end
 	printLoop.Stop(0.15)
 	if not alive() then
 		return
@@ -1858,6 +1897,9 @@ local function regenBody(char, hum, data)
 
 	local groups = Rig.groups(char)
 	local ctx = { char = char, hum = hum, scope = Scope.new() }
+	if getUp then
+		ctx.onTorsoFormed = getUp.release
+	end
 	local running = 0
 	for _, step in ipairs(STEPS) do
 		if cleaned or not Rig.isAlive(char, hum) then
@@ -1923,6 +1965,35 @@ local ACTIONS = {
 		for _, g in ipairs(Rig.LIMBS) do
 			severLimb(g)
 		end
+	end,
+	-- PRUEBA: reproduce solo la animacion de levantarse en tu personaje vivo (sin morir). Tecla B / boton ANIM
+	test = function()
+		local char, hum = State.char, State.hum
+		if not char or not hum or State.busy or not Rig.isAlive(char, hum) then
+			return
+		end
+		local root = char:FindFirstChild("HumanoidRootPart")
+		if not root then
+			return
+		end
+		State.busy = true
+		spawnSafe(function()
+			local ok, err = pcall(function()
+				local gu = GetUp.start(char, hum, root)
+				if gu then
+					gu.release()
+					gu.finish()
+				end
+			end)
+			if not ok then
+				warn("[RICKPRIME] prueba: " .. tostring(err))
+				GetUp.stop()
+			end
+			if char.Parent then
+				root.Anchored = false
+			end
+			State.busy = false
+		end)
 	end,
 	die = function()
 		local hum = State.hum
@@ -2167,6 +2238,7 @@ local BOTONES = {
 	{ texto = "PIERNA", accion = "leg", cTexto = COLOR_VERDE, cBorde = COLOR_ROJO },
 	{ texto = "TODO", accion = "all", cTexto = COLOR_ROJO, cBorde = COLOR_VERDE },
 	{ texto = "MORIR", accion = "die", cTexto = COLOR_ROJO, cBorde = COLOR_ROJO },
+	{ texto = "ANIM", accion = "test", cTexto = COLOR_VERDE, cBorde = COLOR_VERDE },
 }
 
 for i, def in ipairs(BOTONES) do
@@ -2186,6 +2258,7 @@ local TECLAS = {
 	[Enum.KeyCode.X] = "leg",
 	[Enum.KeyCode.C] = "all",
 	[Enum.KeyCode.V] = "die",
+	[Enum.KeyCode.B] = "test", -- prueba la animacion de levantarse
 }
 
 con(UIS.InputBegan, function(input, procesado)
